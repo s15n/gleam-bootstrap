@@ -8,7 +8,8 @@ import gleam/result
 import gleam/string
 import gleam/string_builder.{type StringBuilder}
 
-import parse/error.{type LexicalError, LexicalError, SrcSpan}
+import ast.{type SrcSpan, SrcSpan}
+import parse/error.{type LexicalError, LexicalError}
 import parse/token.{type Token}
 
 pub type Lexer {
