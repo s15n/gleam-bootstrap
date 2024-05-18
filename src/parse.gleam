@@ -60,6 +60,7 @@ import ast.{type SrcSpan, SrcSpan}
 import parse/error.{
   type LexicalError, type ParseError, type ParseErrorType, ParseError,
 }
+import parse/extra.{type ModuleExtra, ModuleExtra}
 import parse/lexer.{type LexResult, type Spanned}
 import parse/token.{type Token}
 
@@ -71,10 +72,6 @@ pub type Parsed {
 
 // TODO
 type UntypedModule =
-  Nil
-
-// TODO
-type ModuleExtra =
   Nil
 
 /// We use this to keep track of the `@internal` annotation for top level
@@ -206,8 +203,7 @@ fn parser_new(input: Iterator(LexResult)) -> Parser {
     lex_errors: [],
     tok0: None,
     tok1: None,
-    // TODO: ModuleExtra::new()
-    extra: Nil,
+    extra: extra.module_extra_new(),
     doc_comments: queue.new(),
   )
   |> advance
@@ -227,7 +223,26 @@ fn ensure_no_errors_or_remaining_input(
   parser: Parser,
   res: Result(a, ParseError),
 ) -> #(Result(a, ParseError), Parser) {
-  todo
+  case ensure_no_errors(parser, res) {
+    Error(err) -> #(Error(err), parser)
+    Ok(parse_result) -> {
+      let #(res, parser) = next_tok(parser)
+      case res {
+        // there are still more tokens
+        Some(#(start, _, end)) -> {
+          let expected = ["An import, const, type, or function."]
+          #(
+            Error(ParseError(
+              error.UnexpectedToken(expected, hint: None),
+              SrcSpan(start, end),
+            )),
+            parser,
+          )
+        }
+        None -> #(Ok(parse_result), parser)
+      }
+    }
+  }
 }
 
 // The way the parser is currently implemented, it cannot exit immediately
@@ -238,9 +253,18 @@ fn ensure_no_errors_or_remaining_input(
 // 1) LexError, 2) ParseError
 fn ensure_no_errors(
   parser: Parser,
-  res: Result(a, ParseError),
-) -> #(Result(a, ParseError), Parser) {
-  todo
+  parse_result: Result(a, ParseError),
+) -> Result(a, ParseError) {
+  case parser.lex_errors {
+    [error, ..] -> {
+      // Lex errors first
+      let location = error.location
+      parse_error(error.LexError(error), location)
+    }
+    [] ->
+      // Return any existing parse error
+      parse_result
+  }
 }
 
 fn parse_definition(
@@ -363,25 +387,26 @@ fn parse_expression_unit_collapsing_single_value_blocks(
 fn parse_expression_unit(
   parser: Parser,
 ) -> #(Result(Option(ast.UntypedExpr), ParseError), Parser) {
-  let expr = case parser.tok0 {
+  let #(res, parser) = case parser.tok0 {
     Some(#(start, token.String(value), end)) -> todo
     Some(#(start, token.Int(value), end)) -> {
       let parser = advance(parser)
       // UntypedExprInt(location: SrcSpan(start, end), value)
-      Nil
+      #(Ok(Some(Nil)), parser)
     }
     // ...
-    tok0 -> {
-      io.debug(parser)
-      io.debug(tok0)
-      todo
-    }
+    _tok0 -> #(Ok(None), parser)
   }
+  case res {
+    Ok(Some(expr)) -> {
+      // field access and call can stack up
+      // (loop)
 
-  // field access and call can stack up
-  // (loop)
-
-  #(Ok(Some(expr)), parser)
+      #(Ok(Some(expr)), parser)
+    }
+    Ok(None) -> #(Ok(None), parser)
+    Error(err) -> #(Error(err), parser)
+  }
 }
 
 // A `use` expression
@@ -990,11 +1015,20 @@ fn next_tok_step(
           case token {
             // gather and skip extra
             #(start, token.CommentNormal, end) -> {
-              //let parser = Parser(..parser, extra: ModuleExtra(..parser.extra, comments: [SrcSpan(start, end), ..parser.extra.comments]))
+              let parser =
+                Parser(
+                  ..parser,
+                  extra: ModuleExtra(
+                    ..parser.extra,
+                    comments: queue.push_back(
+                      parser.extra.comments,
+                      SrcSpan(start, end),
+                    ),
+                  ),
+                )
               next_tok_step(parser, spanned, None)
             }
             #(start, token.CommentDoc(content), end) -> {
-              //let parser = Parser(..parser, extra: ModuleExtra(..parser.extra, doc_comments: [SrcSpan(start, end), ..parser.extra.doc_comments]))
               let parser =
                 Parser(
                   ..parser,
@@ -1002,15 +1036,39 @@ fn next_tok_step(
                     start,
                     content,
                   )),
+                  extra: ModuleExtra(
+                    ..parser.extra,
+                    doc_comments: queue.push_back(
+                      parser.extra.doc_comments,
+                      SrcSpan(start, end),
+                    ),
+                  ),
                 )
               next_tok_step(parser, spanned, None)
             }
             #(start, token.CommentModule, end) -> {
-              //let parser = Parser(..parser, extra: ModuleExtra(..parser.extra, module_comments: [SrcSpan(start, end), ..parser.extra.module_comments]))
+              let parser =
+                Parser(
+                  ..parser,
+                  extra: ModuleExtra(
+                    ..parser.extra,
+                    module_comments: queue.push_back(
+                      parser.extra.module_comments,
+                      SrcSpan(start, end),
+                    ),
+                  ),
+                )
               next_tok_step(parser, spanned, None)
             }
             #(start, token.NewLine, _) -> {
-              //let parser = Parser(..parser, extra: ModuleExtra(..parser.extra, new_lines: [start, ..parser.extra.new_lines]))
+              let parser =
+                Parser(
+                  ..parser,
+                  extra: ModuleExtra(
+                    ..parser.extra,
+                    new_lines: queue.push_back(parser.extra.new_lines, start),
+                  ),
+                )
               // If the previous token is a newline as well that means we
               // have run into an empty line.
               // TODO
@@ -1018,7 +1076,17 @@ fn next_tok_step(
                 Some(start) -> {
                   // We increase the byte position so that newline's start
                   // doesn't overlap with the previous token's end.
-                  //let parser = Parser(..parser, extra: ModuleExtra(..parser.extra, new_lines: [start + 1, ..parser.extra.new_lines]))
+                  let parser =
+                    Parser(
+                      ..parser,
+                      extra: ModuleExtra(
+                        ..parser.extra,
+                        new_lines: queue.push_back(
+                          parser.extra.new_lines,
+                          start + 1,
+                        ),
+                      ),
+                    )
                   parser
                 }
                 _ -> parser
