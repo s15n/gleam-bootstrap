@@ -203,17 +203,16 @@ fn consume_normal(lexer: Lexer) -> #(Result(Nil, LexicalError), Lexer) {
       case res {
         Ok(_) ->
           case
-            check_for_minus,
-            lexer.chr0
-            == Some("-"),
-            is_number_start("-", lexer.chr1)
+            check_for_minus
+            && lexer.chr0 == Some("-")
+            && is_number_start("-", lexer.chr1)
           {
-            True, True, True -> {
+            True -> {
               // We want to lex `1-1` and `x-1` as `1 - 1` and `x - 1`
               let lexer = eat_single_char(lexer, token.Minus)
               #(Ok(Nil), lexer)
             }
-            _, _, _ -> #(Ok(Nil), lexer)
+            False -> #(Ok(Nil), lexer)
           }
         Error(err) -> #(Error(err), lexer)
       }
@@ -451,6 +450,7 @@ fn consume_character(
   }
 }
 
+// Small abstraction for function above
 fn maybe_double_char(
   lexer: Lexer,
   second: String,
@@ -539,6 +539,7 @@ fn lex_upname(lexer: Lexer) -> #(LexResult, Lexer) {
   }
 }
 
+// Loop for 2 functions above
 fn push_chars(
   lexer: Lexer,
   sb: StringBuilder,
@@ -554,6 +555,7 @@ fn push_chars(
   }
 }
 
+// Loop for 2 functions above push_chars
 fn push_name_error_chars(
   lexer: Lexer,
   sb: StringBuilder,
@@ -837,6 +839,7 @@ type CommentKind {
   ModuleDocComment
 }
 
+// Loop for function above
 fn push_line(lexer: Lexer, sb: StringBuilder) -> #(StringBuilder, Lexer) {
   case lexer.chr0 {
     Some("\n") -> #(sb, lexer)
@@ -865,6 +868,7 @@ fn lex_string(lexer: Lexer) -> #(LexResult, Lexer) {
   }
 }
 
+// Loop for function above
 fn push_string(
   lexer: Lexer,
   sb: StringBuilder,
@@ -924,10 +928,7 @@ fn push_string(
                         )),
                       )
                       let sb =
-                        sb
-                        |> string_builder.append("\\u{")
-                        |> string_builder.append(hex_str)
-                        |> string_builder.append("}")
+                        string_builder.append(sb, "\\u{" <> hex_str <> "}")
                       push_string(lexer, sb, start_pos)
                     }
                     _ -> {
