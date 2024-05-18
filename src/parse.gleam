@@ -54,7 +54,9 @@ import gleam/int
 import gleam/iterator.{type Iterator}
 import gleam/option.{type Option, None, Some}
 import gleam/order
+import gleam/pair
 import gleam/queue.{type Queue}
+import gleam/result
 
 import ast.{type SrcSpan, SrcSpan}
 import parse/error.{
@@ -129,12 +131,13 @@ pub fn parse_module(source: String) -> Result(Parsed, ParseError) {
     lexer.make_tokenizer(source)
     |> lexer.iterator
     |> parser_new
-
   let #(res, parser) = inner_parse_module(parser)
   case res {
     Ok(parsed) -> Ok(Parsed(..parsed, extra: parser.extra))
     Error(err) -> Error(err)
   }
+  //use parsed, parser <- try(inner_parse_module(parser))
+  //Parsed(..parsed, extra: parser.extra)
 }
 
 //
@@ -155,6 +158,12 @@ pub fn parse_statement_sequence(
     Ok(_) -> parse_error(error.ExpectedExpr, SrcSpan(0, 0))
     Error(err) -> Error(err)
   }
+  //let #(expr, parser) = parse_statement_seq(parser)
+  //use expr, _parser <- try(ensure_no_errors_or_remaining_input(parser, expr))
+  //case expr {
+  //  Some(#(e, _)) -> Ok(e)
+  //  _ -> parse_error(error.ExpectedExpr, SrcSpan(0, 0))
+  //}
 }
 
 //
@@ -189,7 +198,7 @@ pub type Constant(a, b) {
 pub type Parser {
   Parser(
     tokens: Iterator(LexResult),
-    lex_errors: List(LexicalError),
+    lex_errors: Queue(LexicalError),
     tok0: Option(Spanned),
     tok1: Option(Spanned),
     extra: ModuleExtra,
@@ -200,7 +209,7 @@ pub type Parser {
 fn parser_new(input: Iterator(LexResult)) -> Parser {
   Parser(
     tokens: input,
-    lex_errors: [],
+    lex_errors: queue.new(),
     tok0: None,
     tok1: None,
     extra: extra.module_extra_new(),
@@ -255,13 +264,13 @@ fn ensure_no_errors(
   parser: Parser,
   parse_result: Result(a, ParseError),
 ) -> Result(a, ParseError) {
-  case parser.lex_errors {
-    [error, ..] -> {
+  case queue.pop_front(parser.lex_errors) {
+    Ok(#(error, _)) -> {
       // Lex errors first
       let location = error.location
       parse_error(error.LexError(error), location)
     }
-    [] ->
+    Error(_) ->
       // Return any existing parse error
       parse_result
   }
@@ -368,11 +377,10 @@ fn push_expression(
 fn parse_expression_unit_collapsing_single_value_blocks(
   parser: Parser,
 ) -> #(Result(Option(ast.UntypedExpr), ParseError), Parser) {
-  let #(res, parser) = parse_expression_unit(parser)
+  use res, parser <- try(parse_expression_unit(parser))
   case res {
-    Error(err) -> #(Error(err), parser)
-    Ok(Some(expr)) -> #(Ok(Some(expr)), parser)
-    Ok(None) -> #(Ok(None), parser)
+    Some(expr) -> #(Ok(Some(expr)), parser)
+    None -> #(Ok(None), parser)
   }
 }
 
@@ -387,7 +395,7 @@ fn parse_expression_unit_collapsing_single_value_blocks(
 fn parse_expression_unit(
   parser: Parser,
 ) -> #(Result(Option(ast.UntypedExpr), ParseError), Parser) {
-  let #(res, parser) = case parser.tok0 {
+  use res, parser <- try(case parser.tok0 {
     Some(#(start, token.String(value), end)) -> todo
     Some(#(start, token.Int(value), end)) -> {
       let parser = advance(parser)
@@ -396,16 +404,15 @@ fn parse_expression_unit(
     }
     // ...
     _tok0 -> #(Ok(None), parser)
-  }
+  })
   case res {
-    Ok(Some(expr)) -> {
+    Some(expr) -> {
       // field access and call can stack up
       // (loop)
 
       #(Ok(Some(expr)), parser)
     }
-    Ok(None) -> #(Ok(None), parser)
-    Error(err) -> #(Error(err), parser)
+    None -> #(Ok(None), parser)
   }
 }
 
@@ -439,7 +446,50 @@ fn parse_assignment(
   parser: Parser,
   start: Int,
 ) -> #(Result(ast.UntypedStatement, ParseError), Parser) {
-  todo
+  let kind = case parser.tok0 {
+    Some(#(assert_start, token.Assert, assert_end)) -> todo
+    _ -> ast.LetAssignment
+  }
+  use res, parser <- try(parse_pattern(parser))
+  case res {
+    Some(pattern) -> {
+      use annotation, parser <- try(parse_type_annotation(parser, token.Colon))
+      use #(eq_s, eq_e), parser <- try(
+        maybe_one(parser, token.Equal)
+        |> pair.map_first(fn(opt) {
+          option.to_result(
+            opt,
+            ParseError(
+              error: error.ExpectedEqual,
+              // TODO: pattern.location().start|end
+              location: SrcSpan(0, 0),
+            ),
+          )
+        }),
+      )
+      todo
+      //use #(eq_s, eq_e) <-
+      //  res
+      //  |> option.to_result(ParseError(
+      //    error: error.ExpectedEqual,
+      //    // TODO: pattern.location().start|end
+      //    location: SrcSpan(0, 0),
+      //  ))
+      //  |> result.try
+      //case res {
+      //  Error(err) -> #(Error(err), parser)
+      //  Ok(annotation) -> {
+      //    let #(res, parser) = maybe_one(parser, token.Equal)
+      //    todo
+      //    
+      //  }
+      //}
+    }
+    None -> {
+      // DUPE: 62884
+      next_tok_unexpected(parser, ["A pattern"])
+    }
+  }
 }
 
 // examples:
@@ -1110,7 +1160,7 @@ fn next_tok_step(
           previous_newline,
           Parser(
             ..parser,
-            lex_errors: [err, ..parser.lex_errors],
+            lex_errors: queue.push_back(parser.lex_errors, err),
             tok0: parser.tok1,
             tok1: None,
             tokens: rest,
@@ -1279,4 +1329,15 @@ fn parse_error(
   location: SrcSpan,
 ) -> Result(a, ParseError) {
   Error(ParseError(error: error, location: location))
+}
+
+fn try(
+  pair: #(Result(a, ParseError), Parser),
+  fun: fn(a, Parser) -> #(Result(c, ParseError), Parser),
+) -> #(Result(c, ParseError), Parser) {
+  let #(res, parser) = pair
+  case res {
+    Ok(a) -> fun(a, parser)
+    Error(err) -> #(Error(err), parser)
+  }
 }

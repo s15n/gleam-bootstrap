@@ -14,6 +14,8 @@ import parse/token.{type Token}
 
 import gleam/io
 
+// TODO: add try function
+
 pub type Lexer {
   Lexer(
     chars: Iterator(#(String, Int)),
