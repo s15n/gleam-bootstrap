@@ -12,6 +12,8 @@ import ast.{type SrcSpan, SrcSpan}
 import parse/error.{type LexicalError, LexicalError}
 import parse/token.{type Token}
 
+import gleam/io
+
 pub type Lexer {
   Lexer(
     chars: Iterator(#(String, Int)),
@@ -859,8 +861,9 @@ fn lex_string(lexer: Lexer) -> #(LexResult, Lexer) {
   let #(_, lexer) = next_char(lexer)
   let sb = string_builder.new()
 
-  case push_string(lexer, sb, start_pos) {
-    Ok(#(sb, lexer)) -> {
+  let #(res, lexer) = push_string(lexer, sb, start_pos)
+  case res {
+    Ok(sb) -> {
       let end_pos = get_pos(lexer)
       let token = token.String(string_builder.to_string(sb))
       #(Ok(#(start_pos, token, end_pos)), lexer)
@@ -874,7 +877,7 @@ fn push_string(
   lexer: Lexer,
   sb: StringBuilder,
   start_pos: Int,
-) -> Result(#(StringBuilder, Lexer), LexicalError) {
+) -> #(Result(StringBuilder, LexicalError), Lexer) {
   let #(c, lexer) = next_char(lexer)
   case c {
     Some("\\") -> {
@@ -892,10 +895,13 @@ fn push_string(
 
               use <- guard(when: lexer.chr0 != Some("{"), return: {
                 let location = get_pos(lexer)
-                Error(LexicalError(
-                  error: error.InvalidUnicodeEscape(error.MissingOpeningBrace),
-                  location: SrcSpan(location - 1, location),
-                ))
+                #(
+                  Error(LexicalError(
+                    error: error.InvalidUnicodeEscape(error.MissingOpeningBrace),
+                    location: SrcSpan(location - 1, location),
+                  )),
+                  lexer,
+                )
               })
 
               // All digits inside \u{...}.
@@ -910,23 +916,29 @@ fn push_string(
                       let hex_str_len = string.length(hex_str)
                       use <- guard(
                         when: hex_str_len < 1 || hex_str_len > 6,
-                        return: Error(LexicalError(
-                          error: error.InvalidUnicodeEscape(
-                            error.InvalidNumberOfHexDigits,
-                          ),
-                          location: SrcSpan(slash_pos, get_pos(lexer)),
-                        )),
+                        return: #(
+                          Error(LexicalError(
+                            error: error.InvalidUnicodeEscape(
+                              error.InvalidNumberOfHexDigits,
+                            ),
+                            location: SrcSpan(slash_pos, get_pos(lexer)),
+                          )),
+                          lexer,
+                        ),
                       )
                       let assert Ok(hex_parsed) = int.base_parse(hex_str, 16)
                       use <- guard(
                         when: string.utf_codepoint(hex_parsed)
                           |> result.is_error,
-                        return: Error(LexicalError(
-                          error: error.InvalidUnicodeEscape(
-                            error.InvalidCodepoint,
-                          ),
-                          location: SrcSpan(slash_pos, get_pos(lexer)),
-                        )),
+                        return: #(
+                          Error(LexicalError(
+                            error: error.InvalidUnicodeEscape(
+                              error.InvalidCodepoint,
+                            ),
+                            location: SrcSpan(slash_pos, get_pos(lexer)),
+                          )),
+                          lexer,
+                        ),
                       )
                       let sb =
                         string_builder.append(sb, "\\u{" <> hex_str <> "}")
@@ -934,40 +946,49 @@ fn push_string(
                     }
                     _ -> {
                       let location = get_pos(lexer)
-                      Error(LexicalError(
-                        error: error.InvalidUnicodeEscape(
-                          error.ExpectedHexDigitOrCloseBrace,
-                        ),
-                        location: SrcSpan(location - 1, location),
-                      ))
+                      #(
+                        Error(LexicalError(
+                          error: error.InvalidUnicodeEscape(
+                            error.ExpectedHexDigitOrCloseBrace,
+                          ),
+                          location: SrcSpan(location - 1, location),
+                        )),
+                        lexer,
+                      )
                     }
                   }
-                Error(err) -> Error(err)
+                Error(err) -> #(Error(err), lexer)
               }
             }
-            _ ->
+            _ -> #(
               Error(LexicalError(
                 error: error.BadStringEscape,
                 location: SrcSpan(slash_pos, slash_pos + 1),
-              ))
+              )),
+              lexer,
+            )
           }
-        _ ->
+        _ -> #(
           Error(LexicalError(
             error: error.BadStringEscape,
             location: SrcSpan(slash_pos, slash_pos),
-          ))
+          )),
+          lexer,
+        )
       }
     }
-    Some("\"") -> Ok(#(sb, lexer))
+    Some("\"") -> #(Ok(sb), lexer)
     Some(c) -> {
       let sb = string_builder.append(sb, c)
       push_string(lexer, sb, start_pos)
     }
-    None ->
+    None -> #(
       Error(LexicalError(
         error: error.UnexpectedStringEnd,
         location: SrcSpan(start_pos, start_pos),
-      ))
+      )),
+      lexer,
+    )
   }
 }
 
