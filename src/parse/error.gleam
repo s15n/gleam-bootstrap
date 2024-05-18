@@ -3,8 +3,9 @@ pub type LexicalError {
 }
 
 // TODO: This is a placeholder
-type SrcSpan =
-  #()
+pub type SrcSpan {
+  SrcSpan(start: Int, end: Int)
+}
 
 pub type InvalidUnicodeEscapeError {
   MissingOpeningBrace

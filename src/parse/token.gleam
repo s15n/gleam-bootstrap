@@ -1,13 +1,10 @@
-type EcoString =
-  String
-
 pub type Token {
-  Name(name: EcoString)
-  UpName(name: EcoString)
-  DiscardName(name: EcoString)
-  Int(value: EcoString)
-  Float(value: EcoString)
-  String(value: EcoString)
+  Name(name: String)
+  UpName(name: String)
+  DiscardName(name: String)
+  Int(value: String)
+  Float(value: String)
+  String(value: String)
   CommentDoc(content: String)
   // Groupings
   LeftParen
