@@ -213,3 +213,13 @@ pub fn lowcase_bool_in_pattern_test() {
     location: SrcSpan(start: 15, end: 19),
   ))
 }
+
+pub fn anonymous_function_labeled_arguments_test() {
+  "let anon_subtract = fn (minuend a: Int, subtrahend b: Int) -> Int {
+  a - b
+}"
+  |> should_err(ParseError(
+    error: error.UnexpectedLabel,
+    location: SrcSpan(start: 33, end: 34),
+  ))
+}

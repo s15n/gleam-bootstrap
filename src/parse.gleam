@@ -63,6 +63,7 @@ import gleam/string
 
 import ast.{type SrcSpan, SrcSpan}
 import ast/untyped
+import build
 import parse/error.{
   type LexicalError, type ParseError, type ParseErrorType, ParseError,
 }
@@ -73,12 +74,8 @@ import parse/token.{type Token}
 import gleam/io
 
 pub type Parsed {
-  Parsed(module: UntypedModule, extra: ModuleExtra)
+  Parsed(module: untyped.Module, extra: ModuleExtra)
 }
-
-// TODO
-type UntypedModule =
-  Nil
 
 /// We use this to keep track of the `@internal` annotation for top level
 /// definitions. Instead of using just a boolean we want to keep track of the
@@ -97,27 +94,27 @@ type UntypedModule =
 /// ```
 type InternalAttribute {
   // default
-  Missing
-  Present(SrcSpan)
+  InternalAttrMissing
+  InternalAttrPresent(SrcSpan)
 }
 
 type Attributes {
   Attributes(
-    target: Option(Target),
-    deprecated: Deprecation,
+    target: Option(build.Target),
+    deprecated: ast.Deprecation,
     external_erlang: Option(#(String, String)),
     external_javascript: Option(#(String, String)),
     internal: InternalAttribute,
   )
 }
 
-// TODO
-type Target =
-  Nil
-
-// TODO
-type Deprecation =
-  Nil
+const attributes_default = Attributes(
+  target: None,
+  deprecated: Nil,
+  external_erlang: None,
+  external_javascript: None,
+  internal: InternalAttrMissing,
+)
 
 fn attributes_has_function_only(attributes: Attributes) -> Bool {
   case attributes {
@@ -175,7 +172,7 @@ pub fn parse_statement_sequence(
 //
 pub fn parse_const_value(
   source: String,
-) -> Result(Constant(Nil, Nil), ParseError) {
+) -> Result(ast.Constant(Nil, Nil), ParseError) {
   let parser =
     lexer.make_tokenizer(source)
     |> lexer.iterator
@@ -185,15 +182,10 @@ pub fn parse_const_value(
   let #(res, _parser) = ensure_no_errors_or_remaining_input(parser, res)
   case res {
     // TODO: Ok(e)
-    Ok(Some(e)) -> Ok(NilConstant)
+    Ok(Some(e)) -> Ok(ast.NilConstant)
     Ok(_) -> parse_error(error.ExpectedExpr, SrcSpan(0, 0))
     Error(err) -> Error(err)
   }
-}
-
-// TODO
-pub type Constant(a, b) {
-  NilConstant
 }
 
 //
@@ -224,7 +216,24 @@ fn parser_new(input: Iterator(LexResult)) -> Parser {
 }
 
 fn inner_parse_module(parser: Parser) -> #(Result(Parsed, ParseError), Parser) {
-  todo
+  let #(definitions, parser) = series_of(parser, parse_definition, None)
+  use definitions, parser <- try(ensure_no_errors_or_remaining_input(
+    parser,
+    definitions,
+  ))
+
+  #(
+    Ok(Parsed(
+      module: ast.Module(
+        name: "",
+        documentation: None,
+        type_info: Nil,
+        definitions: definitions,
+      ),
+      extra: extra.module_extra_new(),
+    )),
+    parser,
+  )
 }
 
 // The way the parser is currently implemented, it cannot exit immediately while advancing
@@ -282,13 +291,9 @@ fn ensure_no_errors(
 
 fn parse_definition(
   parser: Parser,
-) -> #(Result(Option(TargetedDefinition), ParseError), Parser) {
+) -> #(Result(Option(untyped.TargetedDefinition), ParseError), Parser) {
   todo
 }
-
-// TODO
-type TargetedDefinition =
-  Nil
 
 //
 // Parse Expressions
@@ -494,7 +499,39 @@ fn parse_expression_unit(
     }
     // BitArray
     Some(#(start, token.LtLt, _)) -> todo
-    Some(#(start, token.Fn, _)) -> todo
+    Some(#(start, token.Fn, _)) -> {
+      let parser = advance(parser)
+      use function, parser <- try(parse_function(
+        parser,
+        from: start,
+        public: False,
+        anonymous: True,
+        attributes: attributes_default,
+      ))
+      case function {
+        Some(ast.FunctionDef(ast.Function(
+          location: location,
+          arguments: args,
+          body: body,
+          return_annotation: ret_ann,
+          end_position: end_pos,
+          ..,
+        ))) -> #(
+          Ok(
+            Some(untyped.FnExpr(
+              location: SrcSpan(location.start, end_pos),
+              arguments: args,
+              body: body,
+              return_annotation: ret_ann,
+            )),
+          ),
+          parser,
+        )
+        _ ->
+          // this isn't just none, it could also be Some(UntypedExpr::..)
+          next_tok_unexpected(parser, ["An opening parenthesis"])
+      }
+    }
     // expression block  "{" "}"
     Some(#(start, token.LeftBrace, _)) -> todo
     // case
@@ -573,13 +610,9 @@ fn parse_use(
 
 fn parse_use_assignment(
   parser: Parser,
-) -> #(Result(Option(UseAssignment), ParseError), Parser) {
+) -> #(Result(Option(untyped.UseAssignment), ParseError), Parser) {
   todo
 }
-
-// TODO
-type UseAssignment =
-  Nil
 
 // An assignment, with `let` already consumed
 fn parse_assignment(
@@ -777,7 +810,7 @@ fn parse_block(
 // The left side of an "=" or a "->"
 fn parse_pattern(
   parser: Parser,
-) -> #(Result(Option(ast.UntypedPattern), ParseError), Parser) {
+) -> #(Result(Option(untyped.Pattern), ParseError), Parser) {
   let #(res, parser) = case parser.tok0 {
     // Pattern::Var or Pattern::Constructor start
     Some(#(start, token.Name(name), end)) -> {
@@ -875,7 +908,7 @@ fn parse_pattern(
 //   pattern, pattern | pattern, pattern if -> expr
 fn parse_case_clause(
   parser: Parser,
-) -> #(Result(Option(UntypedClause), ParseError), Parser) {
+) -> #(Result(Option(untyped.Clause), ParseError), Parser) {
   use patterns, parser <- try(parse_patterns(parser))
   case patterns {
     [first, ..] -> {
@@ -918,8 +951,8 @@ fn parse_case_clause(
 
 fn push_alternative_patterns(
   parser: Parser,
-  list: List(ast.UntypedPattern),
-) -> #(Result(List(ast.UntypedPattern), ParseError), Parser) {
+  list: List(untyped.Pattern),
+) -> #(Result(List(untyped.Pattern), ParseError), Parser) {
   let #(loc, parser) = maybe_one(parser, token.Pipe)
   case loc {
     None -> #(Ok(list.reverse(list)), parser)
@@ -930,13 +963,9 @@ fn push_alternative_patterns(
   }
 }
 
-// TODO
-type UntypedClause =
-  Nil
-
 fn parse_patterns(
   parser: Parser,
-) -> #(Result(List(ast.UntypedPattern), ParseError), Parser) {
+) -> #(Result(List(untyped.Pattern), ParseError), Parser) {
   series_of(parser, parse_pattern, Some(token.Comma))
 }
 
@@ -947,13 +976,9 @@ fn parse_patterns(
 fn parse_case_clause_guard(
   parser: Parser,
   nested: Bool,
-) -> #(Result(Option(UntypedClauseGuard), ParseError), Parser) {
+) -> #(Result(Option(untyped.ClauseGuard), ParseError), Parser) {
   todo
 }
-
-// TODO
-type UntypedClauseGuard =
-  Nil
 
 // examples
 // a
@@ -964,7 +989,7 @@ type UntypedClauseGuard =
 // a < b || b < c
 fn parse_case_clause_guard_unit(
   parser: Parser,
-) -> #(Result(Option(UntypedClauseGuard), ParseError), Parser) {
+) -> #(Result(Option(untyped.ClauseGuard), ParseError), Parser) {
   todo
 }
 
@@ -973,7 +998,7 @@ fn parse_case_clause_guard_unit(
 fn expect_constructor_pattern(
   parser: Parser,
   module: Option(#(Int, String, Int)),
-) -> #(Result(ast.UntypedPattern, ParseError), Parser) {
+) -> #(Result(untyped.Pattern, ParseError), Parser) {
   todo
 }
 
@@ -983,7 +1008,7 @@ fn parse_constructor_pattern_args(
   parser: Parser,
   upname_end: Int,
 ) -> #(
-  Result(#(List(ast.CallArg(ast.UntypedPattern)), Bool, Int), ParseError),
+  Result(#(List(ast.CallArg(untyped.Pattern)), Bool, Int), ParseError),
   Parser,
 ) {
   todo
@@ -994,7 +1019,7 @@ fn parse_constructor_pattern_args(
 //   <pattern>
 fn parse_constructor_pattern_arg(
   parser: Parser,
-) -> #(Result(Option(ast.CallArg(ast.UntypedPattern)), ParseError), Parser) {
+) -> #(Result(Option(ast.CallArg(untyped.Pattern)), ParseError), Parser) {
   todo
 }
 
@@ -1002,13 +1027,9 @@ fn parse_constructor_pattern_arg(
 //   a: expr
 fn parse_record_update_arg(
   parser: Parser,
-) -> #(Result(Option(UntypedRecordUpdateArg), ParseError), Parser) {
+) -> #(Result(Option(untyped.RecordUpdateArg), ParseError), Parser) {
   todo
 }
-
-// TODO
-type UntypedRecordUpdateArg =
-  Nil
 
 //
 // Parse Functions
@@ -1021,29 +1042,132 @@ type UntypedRecordUpdateArg =
 //   pub fn a(name name: String) -> String { .. }
 fn parse_function(
   parser: Parser,
-  start: Int,
-  public: Bool,
-  anonymous: Bool,
-  attributes: Attributes,
-) -> #(Result(Option(UntypedDefinition), ParseError), Parser) {
-  todo
-}
+  from start: Int,
+  public public: Bool,
+  anonymous is_anon: Bool,
+  attributes attributes: Attributes,
+) -> #(Result(Option(untyped.Definition), ParseError), Parser) {
+  let #(documentation, parser) = case is_anon {
+    True -> #(None, parser)
+    False -> take_documentation(parser, start)
+  }
+  use name, parser <- try(case is_anon {
+    True -> #(Ok(""), parser)
+    False -> {
+      use #(_, name, _), parser <- try(expect_name(parser))
+      #(Ok(name), parser)
+    }
+  })
+  use _, parser <- try(expect_one(parser, token.LeftParen))
+  use args, parser <- try(series_of(
+    parser,
+    parse_fn_param(_, is_anon),
+    Some(token.Comma),
+  ))
+  use #(_, r_par_e), parser <- try(expect_one_following_series(
+    parser,
+    token.RightParen,
+    "a function parameter",
+  ))
+  use return_annotation, parser <- try(parse_type_annotation(
+    parser,
+    token.RArrow,
+  ))
 
-// TODO
-type UntypedDefinition =
-  Nil
+  let #(loc, parser) = maybe_one(parser, token.LeftBrace)
+  let #(res, parser) = case loc {
+    Some(_) -> {
+      use some_body, parser <- try(parse_statement_seq(parser))
+      use #(_, r_brc_e), parser <- try(expect_one(parser, token.RightBrace))
+      let end =
+        return_annotation
+        |> option.map(fn(ast) { 0 })
+        // ast.location().end
+        |> option.unwrap(case is_anon {
+          True -> r_brc_e
+          False -> r_par_e
+        })
+      let body = case some_body {
+        None -> [
+          ast.ExpressionStmt(untyped.TodoExpr(
+            kind: ast.EmptyFunctionTodo,
+            location: SrcSpan(start, end),
+            message: None,
+          )),
+        ]
+        Some(#(body, _)) -> body
+      }
+      #(Ok(#(body, end, r_brc_e)), parser)
+    }
+    None if is_anon -> #(
+      Error(ParseError(
+        error: error.ExpectedFunctionBody,
+        location: SrcSpan(start, r_par_e),
+      )),
+      parser,
+    )
+    None -> {
+      let body = [
+        ast.ExpressionStmt(
+          untyped.PlaceholderExpr(location: SrcSpan(start, r_par_e)),
+        ),
+      ]
+      #(Ok(#(body, r_par_e, r_par_e)), parser)
+    }
+  }
+  case res {
+    Ok(#(body, end, end_pos)) ->
+      case publicity(public, attributes.internal) {
+        Ok(publicity) -> #(
+          Ok(
+            Some(
+              ast.FunctionDef(ast.Function(
+                location: SrcSpan(start, end_pos),
+                end_position: end_pos,
+                name: name,
+                arguments: args,
+                body: body,
+                publicity: publicity,
+                deprecation: attributes.deprecated,
+                return_annotation: return_annotation,
+                return_type: Nil,
+                documentation: documentation,
+                external_erlang: attributes.external_erlang,
+                external_javascript: attributes.external_javascript,
+                implementations: Nil,
+                // implementations: ast.Implementations(
+              //   gleam: True,
+              //   can_run_on_erlang: True,
+              //   can_run_on_javascript: True,
+              //   uses_erlang_externals: False,
+              //   uses_javascript_externals: False,
+              // ),
+              )),
+            ),
+          ),
+          parser,
+        )
+        Error(err) -> #(Error(err), parser)
+      }
+    Error(err) -> #(Error(err), parser)
+  }
+}
 
 fn publicity(
-  parser: Parser,
   public: Bool,
   internal: InternalAttribute,
-) -> #(Result(Publicity, ParseError), Parser) {
-  todo
+) -> Result(ast.Publicity, ParseError) {
+  case internal, public {
+    InternalAttrMissing, True -> Ok(ast.Public)
+    InternalAttrMissing, False -> Ok(ast.Private)
+    InternalAttrPresent(_), True -> Ok(ast.Internal)
+    InternalAttrPresent(location), False ->
+      Error(ParseError(
+        error: error.RedundantInternalAttribute,
+        location: location,
+      ))
+  }
 }
-
-// TODO
-type Publicity =
-  Nil
 
 // Parse a single function definition param
 //
@@ -1057,13 +1181,48 @@ type Publicity =
 fn parse_fn_param(
   parser: Parser,
   anonymous: Bool,
-) -> #(Result(Option(UntypedArg), ParseError), Parser) {
-  todo
+) -> #(Result(Option(untyped.Arg), ParseError), Parser) {
+  let #(early_return, res, start, names, end, parser) = case
+    parser.tok0,
+    parser.tok1
+  {
+    // labeled discard
+    Some(#(start, token.Name(name: label), tok0_end)),
+      Some(#(_, token.DiscardName(name), end)) -> todo
+    // discard
+    Some(#(start, token.DiscardName(name), end)), tok1 -> todo
+    // labeled name
+    Some(#(start, token.Name(name: label), tok0_end)),
+      Some(#(_, token.Name(name), end)) -> todo
+    // name
+    Some(#(start, token.Name(name), end)), tok1 -> todo
+    tok0, tok1 -> {
+      #(True, Ok(Nil), 0, [], 0, Parser(..parser, tok0: tok0, tok1: tok1))
+    }
+  }
+  case early_return {
+    True -> #(Ok(None), parser)
+    False -> {
+      use res, parser <- try(parse_type_annotation(parser, token.Colon))
+      let #(end, annotation) = case res {
+        Some(annotation) -> #(0, Some(annotation))
+        // annotation.location().end
+        None -> #(end, None)
+      }
+      #(
+        Ok(
+          Some(ast.Arg(
+            location: SrcSpan(start, end),
+            type_: Nil,
+            names: names,
+            annotation: annotation,
+          )),
+        ),
+        parser,
+      )
+    }
+  }
 }
-
-// TODO
-type UntypedArg =
-  Nil
 
 // Parse function call arguments, no parens
 //
@@ -1077,10 +1236,6 @@ fn parse_fn_args(
 ) -> #(Result(List(ParserArg), ParseError), Parser) {
   todo
 }
-
-// TODO
-type ParserArg =
-  Nil
 
 // Parse a single function call arg
 //
@@ -1110,7 +1265,7 @@ fn parse_custom_type(
   public: Bool,
   opaque_: Bool,
   attributes: Attributes,
-) -> #(Result(Option(UntypedDefinition), ParseError), Parser) {
+) -> #(Result(Option(untyped.Definition), ParseError), Parser) {
   todo
 }
 
@@ -1130,13 +1285,8 @@ fn expect_type_name(
 fn parse_type_constructor_args(
   parser: Parser,
   start: Int,
-) -> #(Result(#(List(RecordConstructorArg(Nil)), Int), ParseError), Parser) {
+) -> #(Result(#(List(ast.RecordConstructorArg(Nil)), Int), ParseError), Parser) {
   todo
-}
-
-// TODO
-type RecordConstructorArg(a) {
-  NilRecordConstructorArg
 }
 
 //
@@ -1217,7 +1367,7 @@ fn parse_types(
 fn parse_import(
   parser: Parser,
   import_start: Int,
-) -> #(Result(Option(UntypedDefinition), ParseError), Parser) {
+) -> #(Result(Option(untyped.Definition), ParseError), Parser) {
   todo
 }
 
@@ -1227,10 +1377,6 @@ fn parse_unqualified_imports(
 ) -> #(Result(ParsedUnqualifiedImports, ParseError), Parser) {
   todo
 }
-
-// TODO
-type ParsedUnqualifiedImports =
-  Nil
 
 //
 // Parse Constants
@@ -1244,7 +1390,7 @@ fn parse_module_const(
   parser: Parser,
   public: Bool,
   attributes: Attributes,
-) -> #(Result(Option(UntypedDefinition), ParseError), Parser) {
+) -> #(Result(Option(untyped.Definition), ParseError), Parser) {
   todo
 }
 
@@ -1255,13 +1401,9 @@ fn parse_module_const(
 //   [1,2,3]
 fn inner_parse_const_value(
   parser: Parser,
-) -> #(Result(Option(UntypedConstant), ParseError), Parser) {
+) -> #(Result(Option(untyped.Constant), ParseError), Parser) {
   todo
 }
-
-// TODO
-type UntypedConstant =
-  Nil
 
 // Parse the '( .. )' of a const type constructor
 fn parse_const_record_finish(
@@ -1270,7 +1412,7 @@ fn parse_const_record_finish(
   module: Option(String),
   name: String,
   end: Int,
-) -> #(Result(Option(UntypedConstant), ParseError), Parser) {
+) -> #(Result(Option(untyped.Constant), ParseError), Parser) {
   todo
 }
 
@@ -1279,7 +1421,7 @@ fn parse_const_record_finish(
 //  const
 fn parse_const_record_arg(
   parser: Parser,
-) -> #(Result(Option(ast.CallArg(UntypedConstant)), ParseError), Parser) {
+) -> #(Result(Option(ast.CallArg(untyped.Constant)), ParseError), Parser) {
   todo
 }
 
@@ -1328,13 +1470,9 @@ fn expect_name(
 
 fn expect_assign_name(
   parser: Parser,
-) -> #(Result(#(Int, AssignName, Int), ParseError), Parser) {
+) -> #(Result(#(Int, ast.AssignName, Int), ParseError), Parser) {
   todo
 }
-
-// TODO
-type AssignName =
-  Nil
 
 // Expect an UpName else a token dependent helpful error
 fn expect_upname(
@@ -1344,7 +1482,7 @@ fn expect_upname(
 }
 
 // Expect a target name. e.g. `javascript` or `erlang`
-fn expect_target(parser: Parser) -> #(Result(Target, ParseError), Parser) {
+fn expect_target(parser: Parser) -> #(Result(build.Target, ParseError), Parser) {
   todo
 }
 
@@ -1759,6 +1897,21 @@ fn parse_error(
   Error(ParseError(error: error, location: location))
 }
 
+// line 3488
+// Parsing a function call into the appropriate structure
+pub type ParserArg {
+  ParserArg(call_arg: ast.CallArg(untyped.Expr))
+  ParserArgHole(name: String, location: SrcSpan, label: Option(String))
+}
+
+// line 3567 (last)
+type ParsedUnqualifiedImports {
+  ParsedUnqualifiedImports(
+    types: List(ast.UnqualifiedImport),
+    values: List(ast.UnqualifiedImport),
+  )
+}
+
 // Gleam helper
 fn try(
   pair: #(Result(a, ParseError), Parser),
@@ -1770,36 +1923,35 @@ fn try(
     Error(err) -> #(Error(err), parser)
   }
 }
-
 // Gleam helper
-fn try_unfold(
-  from initial: a,
-  with step: fn(a) -> Result(iterator.Step(b, a), c),
-) {
-  let regular_step = fn(prev) {
-    case prev {
-      None -> iterator.Done
-      Some(prev) -> {
-        let res = step(prev)
-        case res {
-          Ok(iterator.Next(next, acc)) -> iterator.Next(Ok(next), Some(acc))
-          Ok(iterator.Done) -> iterator.Done
-          Error(err) -> iterator.Next(Error(err), None)
-        }
-      }
-    }
-  }
-  iterator.unfold(Some(initial), regular_step)
-}
+// fn try_unfold(
+//   from initial: a,
+//   with step: fn(a) -> Result(iterator.Step(b, a), c),
+// ) {
+//   let regular_step = fn(prev) {
+//     case prev {
+//       None -> iterator.Done
+//       Some(prev) -> {
+//         let res = step(prev)
+//         case res {
+//           Ok(iterator.Next(next, acc)) -> iterator.Next(Ok(next), Some(acc))
+//           Ok(iterator.Done) -> iterator.Done
+//           Error(err) -> iterator.Next(Error(err), None)
+//         }
+//       }
+//     }
+//   }
+//   iterator.unfold(Some(initial), regular_step)
+// }
 
-fn try_to_list(iter) {
-  let reduce = fn(acc, item) {
-    case item {
-      Ok(item) -> Ok([item, ..acc])
-      Error(err) -> Error(err)
-    }
-  }
-  iter
-  |> iterator.try_fold([], reduce)
-  |> result.map(list.reverse)
-}
+// fn try_to_list(iter) {
+//   let reduce = fn(acc, item) {
+//     case item {
+//       Ok(item) -> Ok([item, ..acc])
+//       Error(err) -> Error(err)
+//     }
+//   }
+//   iter
+//   |> iterator.try_fold([], reduce)
+//   |> result.map(list.reverse)
+// }
