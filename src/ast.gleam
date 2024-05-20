@@ -97,10 +97,21 @@ pub type SrcSpan {
   SrcSpan(start: Int, end: Int)
 }
 
+// line 1342
+pub type UntypedPattern =
+  Pattern(Nil)
+
 // line 1346
 pub type Pattern(ty) {
   IntPat(location: SrcSpan, value: String)
-  // ...
+
+  /// The creation of a variable.
+  /// e.g. `assert [this_is_a_var, .._] = x`
+  VariablePat(location: SrcSpan, name: String, type_: ty)
+
+  /// A name given to a sub-pattern using the `as` keyword.
+  /// e.g. `assert #(1, [_, _] as the_list) = x`
+  AssignPat(name: String, location: SrcSpan, pattern: Pattern(ty))
 }
 
 // line 1597
