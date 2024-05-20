@@ -1,3 +1,5 @@
+//// TODO
+
 import gleam/option.{type Option}
 
 //https://github.com/gleam-lang/gleam/blob/main/compiler-core/src/ast.rs
@@ -129,9 +131,17 @@ pub type Statement(ty, expr) {
   UseStmt(use_: Use)
 }
 
+pub fn statement_location(statement: Statement(ty, expr)) -> SrcSpan {
+  case statement {
+    ExpressionStmt(expression) -> todo
+    AssignmentStmt(assignment) -> assignment.location
+    UseStmt(_) -> todo
+  }
+}
+
 // line 1836
-pub type UntypedStatement =
-  Statement(Nil, UntypedExpr)
+//pub type UntypedStatement =
+//  Statement(Nil, untyped.Expr)
 
 // line 1945
 pub type Assignment(ty, expr) {
@@ -145,14 +155,5 @@ pub type Assignment(ty, expr) {
 }
 
 // TODO
-type UntypedExpr =
-  Nil
-
-// TODO
 type Use =
   Nil
-
-// TODO
-pub fn untyped_statement_location(statement: UntypedStatement) -> SrcSpan {
-  SrcSpan(0, 0)
-}

@@ -205,3 +205,11 @@ pub fn pointless_spread_test() {
     location: SrcSpan(start: 12, end: 18),
   ))
 }
+
+pub fn lowcase_bool_in_pattern_test() {
+  "case 42 > 42 { true -> 1; false -> 2; }"
+  |> should_err(ParseError(
+    error: error.LowcaseBooleanPattern,
+    location: SrcSpan(start: 15, end: 19),
+  ))
+}

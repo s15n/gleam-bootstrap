@@ -62,6 +62,7 @@ import gleam/result
 import gleam/string
 
 import ast.{type SrcSpan, SrcSpan}
+import ast/untyped
 import parse/error.{
   type LexicalError, type ParseError, type ParseErrorType, ParseError,
 }
@@ -148,7 +149,7 @@ pub fn parse_module(source: String) -> Result(Parsed, ParseError) {
 //
 pub fn parse_statement_sequence(
   source: String,
-) -> Result(List(ast.UntypedStatement), ParseError) {
+) -> Result(List(untyped.Statement), ParseError) {
   let parser =
     lexer.make_tokenizer(source)
     |> lexer.iterator
@@ -300,7 +301,7 @@ type TargetedDefinition =
 //   unit op unit pipe unit(call) pipe unit(call)
 fn parse_expression(
   parser: Parser,
-) -> #(Result(Option(ast.UntypedExpr), ParseError), Parser) {
+) -> #(Result(Option(untyped.Expr), ParseError), Parser) {
   // uses the simple operator parser algorithm
   let #(res, #(opstack, estack, _, _), parser) =
     push_expression(parser, #([], [], 0, 0))
@@ -317,10 +318,10 @@ fn parse_expression(
 // Loop for function above
 fn push_expression(
   parser: Parser,
-  meta: #(List(#(Spanned, Int)), List(Nil), Int, Int),
+  meta: #(List(#(Spanned, Int)), List(untyped.Expr), Int, Int),
 ) -> #(
   Result(Bool, ParseError),
-  #(List(#(Spanned, Int)), List(Nil), Int, Int),
+  #(List(#(Spanned, Int)), List(untyped.Expr), Int, Int),
   Parser,
 ) {
   let #(res, parser) = parse_expression_unit(parser)
@@ -379,7 +380,7 @@ fn push_expression(
 
 fn parse_expression_unit_collapsing_single_value_blocks(
   parser: Parser,
-) -> #(Result(Option(ast.UntypedExpr), ParseError), Parser) {
+) -> #(Result(Option(untyped.Expr), ParseError), Parser) {
   use res, parser <- try(parse_expression_unit(parser))
   case res {
     Some(expr) -> #(Ok(Some(expr)), parser)
@@ -397,13 +398,16 @@ fn parse_expression_unit_collapsing_single_value_blocks(
 //   { expression_sequence }
 fn parse_expression_unit(
   parser: Parser,
-) -> #(Result(Option(ast.UntypedExpr), ParseError), Parser) {
+) -> #(Result(Option(untyped.Expr), ParseError), Parser) {
   use res, parser <- try(case parser.tok0 {
     Some(#(start, token.String(value), end)) -> todo
     Some(#(start, token.Int(value), end)) -> {
       let parser = advance(parser)
       // UntypedExpr::Int(location: SrcSpan(start, end), value)
-      #(Ok(Some(Nil)), parser)
+      #(
+        Ok(Some(untyped.IntExpr(location: SrcSpan(start, end), value: value))),
+        parser,
+      )
     }
     Some(#(start, token.Float(value), end)) -> todo
     // var lower_name and UpName
@@ -411,7 +415,10 @@ fn parse_expression_unit(
     | Some(#(start, token.UpName(name), end)) -> {
       let parser = advance(parser)
       // UntypedExpr::Var(location: SrcSpan(start, end), name)
-      #(Ok(Some(Nil)), parser)
+      #(
+        Ok(Some(untyped.VarExpr(location: SrcSpan(start, end), name: name))),
+        parser,
+      )
     }
     Some(#(start, token.Todo, end)) -> todo
     Some(#(start, token.Panic, end)) -> todo
@@ -442,12 +449,9 @@ fn parse_expression_unit(
               let #(elements_after_tail, parser) =
                 series_of(parser, parse_expression, Some(token.Comma))
                 |> pair.map_first(option.from_result)
-              #(
-                Ok(#(Some(tail), elements_after_tail, dot_dot_location)),
-                parser,
-              )
+              #(Ok(#(tail, elements_after_tail, dot_dot_location)), parser)
             }
-            None -> #(Ok(#(Some(tail), None, dot_dot_location)), parser)
+            None -> #(Ok(#(tail, None, dot_dot_location)), parser)
           }
         }
         None -> #(Ok(#(None, None, None)), parser)
@@ -466,16 +470,26 @@ fn parse_expression_unit(
           parser,
         )
         Some(#(start, _)), Some(tail), [_, ..], Some(_) -> #(
-          // TODO: tail.location().end
-          parse_error(error.ListSpreadFollowedByElements, SrcSpan(start, 0)),
+          parse_error(
+            error.ListSpreadFollowedByElements,
+            SrcSpan(start, untyped.expr_location(tail).end),
+          ),
           parser,
         )
         _, _, [_, ..], Some(_) -> #(
           parse_error(error.ListSpreadFollowedByElements, SrcSpan(start, end)),
           parser,
         )
-        _, _, _, _ -> #(Ok(Some(Nil)), parser)
-        // TODO: UntypedExpr::List(location: SrcSpan(start, end), elements, tail)
+        _, _, _, _ -> #(
+          Ok(
+            Some(untyped.ListExpr(
+              location: SrcSpan(start, end),
+              elements: elements,
+              tail: tail,
+            )),
+          ),
+          parser,
+        )
       }
     }
     // BitArray
@@ -484,7 +498,42 @@ fn parse_expression_unit(
     // expression block  "{" "}"
     Some(#(start, token.LeftBrace, _)) -> todo
     // case
-    Some(#(start, token.Case, case_end)) -> todo
+    Some(#(start, token.Case, case_end)) -> {
+      let parser = advance(parser)
+      use subjects, parser <- try(series_of(
+        parser,
+        parse_expression,
+        Some(token.Comma),
+      ))
+      use _, parser <- try(expect_one_following_series(
+        parser,
+        token.LeftBrace,
+        in: "an expression",
+      ))
+      use clauses, parser <- try(series_of(parser, parse_case_clause, None))
+      use #(_, end), parser <- try(expect_one_following_series(
+        parser,
+        token.RightBrace,
+        in: "a case clause",
+      ))
+      case subjects {
+        [] -> #(
+          parse_error(error.ExpectedExpr, SrcSpan(start, case_end)),
+          parser,
+        )
+        _ -> #(
+          Ok(
+            Some(untyped.CaseExpr(
+              location: SrcSpan(start, end),
+              subjects: subjects,
+              clauses: clauses,
+            )),
+          ),
+          parser,
+        )
+      }
+      todo
+    }
     // helpful error on possibly trying to group with "(" ")"
     Some(#(start, token.LeftParen, _)) -> todo
     // Boolean negation
@@ -518,7 +567,7 @@ fn parse_use(
   parser: Parser,
   start: Int,
   end: Int,
-) -> #(Result(ast.UntypedStatement, ParseError), Parser) {
+) -> #(Result(untyped.Statement, ParseError), Parser) {
   todo
 }
 
@@ -536,7 +585,7 @@ type UseAssignment =
 fn parse_assignment(
   parser: Parser,
   start: Int,
-) -> #(Result(ast.UntypedStatement, ParseError), Parser) {
+) -> #(Result(untyped.Statement, ParseError), Parser) {
   let kind = case parser.tok0 {
     Some(#(assert_start, token.Assert, assert_end)) -> todo
     _ -> ast.LetAssignment
@@ -590,20 +639,6 @@ fn parse_assignment(
   }
 }
 
-// fn parse_statement_seq(
-//   parser: Parser,
-// ) -> #(Result(Option(#(Queue(ast.UntypedStatement), Int)), ParseError), Parser) {
-//   let #(res, _, end, parser) = push_statement(parser, queue.new(), None, 0)
-//   case res {
-//     Ok(statements) ->
-//       case queue.is_empty(statements) {
-//         True -> #(Ok(None), parser)
-//         False -> #(Ok(Some(#(statements, end))), parser)
-//       }
-//     Error(err) -> #(Error(err), parser)
-//   }
-// }
-
 // examples:
 //   expr
 //   expr expr..
@@ -613,85 +648,91 @@ fn parse_assignment(
 //   assignment assignment..
 fn parse_statement_seq(
   parser: Parser,
-) -> #(Result(Option(#(List(ast.UntypedStatement), Int)), ParseError), Parser) {
-  let yield = fn(prev) -> Result(
-    iterator.Step(#(ast.UntypedStatement, Int), #(Parser, Option(Int))),
-    ParseError,
-  ) {
-    let #(parser, start) = prev
-    let #(res, parser) = parse_statement(parser)
-    case res {
-      Error(err) -> Error(err)
-      Ok(Some(statement)) -> {
-        let location = ast.untyped_statement_location(statement)
-        let start = case start {
-          None -> Some(location.start)
-          _ -> start
-        }
-        let end = location.end
-        Ok(iterator.Next(#(statement, end), #(parser, start)))
-      }
-      Ok(_) -> Ok(iterator.Done)
-    }
-  }
-  let reduce = fn(acc, item) -> Result(
-    #(List(ast.UntypedStatement), Int),
-    ParseError,
-  ) {
-    let #(statements, _) = acc
-    case item {
-      Ok(#(statement, end)) -> Ok(#([statement, ..statements], end))
-      Error(err) -> Error(err)
-    }
-  }
-  let res =
-    try_unfold(#(parser, None), yield)
-    |> iterator.try_fold(#([], 0), reduce)
+) -> #(Result(Option(#(List(untyped.Statement), Int)), ParseError), Parser) {
+  let #(res, _, end, parser) = push_statement(parser, [], None, 0)
   case res {
-    Ok(#(statements_rev, end)) ->
-      case statements_rev {
-        [] -> #(Ok(None), parser)
-        statements_rev -> #(
-          Ok(Some(#(list.reverse(statements_rev), end))),
-          parser,
-        )
-      }
+    Ok([]) -> #(Ok(None), parser)
+    Ok(statements) -> #(Ok(Some(#(statements, end))), parser)
     Error(err) -> #(Error(err), parser)
   }
 }
 
-// // Loop for function above
-// fn push_statement(
+// fn parse_statement_seq(
 //   parser: Parser,
-//   statements: Queue(ast.UntypedStatement),
-//   start: Option(Int),
-//   end: Int,
-// ) -> #(
-//   Result(Queue(ast.UntypedStatement), ParseError),
-//   Option(Int),
-//   Int,
-//   Parser,
-// ) {
-//   let #(res, parser) = parse_statement(parser)
-//   case res {
-//     Error(err) -> #(Error(err), start, end, parser)
-//     Ok(Some(statement)) -> {
-//       let location = ast.untyped_statement_location(statement)
-//       let start = case start {
-//         None -> Some(location.start)
-//         _ -> start
+// ) -> #(Result(Option(#(List(untyped.Statement), Int)), ParseError), Parser) {
+//   let yield = fn(prev) -> Result(
+//     iterator.Step(#(untyped.Statement, Int), #(Parser, Option(Int))),
+//     ParseError,
+//   ) {
+//     let #(parser, start) = prev
+//     let #(res, parser) = parse_statement(parser)
+//     case res {
+//       Error(err) -> Error(err)
+//       Ok(Some(statement)) -> {
+//         let location = untyped.statement_location(statement)
+//         let start = case start {
+//           None -> Some(location.start)
+//           _ -> start
+//         }
+//         let end = location.end
+//         Ok(iterator.Next(#(statement, end), #(parser, start)))
 //       }
-//       let end = location.end
-//       let statements = queue.push_back(statements, statement)
-//       push_statement(parser, statements, start, end)
+//       Ok(_) -> Ok(iterator.Done)
 //     }
-//     Ok(_) -> #(Ok(statements), start, end, parser)
+//   }
+//   let reduce = fn(acc, item) -> Result(
+//     #(List(untyped.Statement), Int),
+//     ParseError,
+//   ) {
+//     let #(statements, _) = acc
+//     case item {
+//       Ok(#(statement, end)) -> Ok(#([statement, ..statements], end))
+//       Error(err) -> Error(err)
+//     }
+//   }
+//   let res =
+//     try_unfold(#(parser, None), yield)
+//     |> iterator.try_fold(#([], 0), reduce)
+//   case res {
+//     Ok(#(statements_rev, end)) ->
+//       case statements_rev {
+//         [] -> #(Ok(None), parser)
+//         statements_rev -> #(
+//           Ok(Some(#(list.reverse(statements_rev), end))),
+//           parser,
+//         )
+//       }
+//     Error(err) -> #(Error(err), parser)
 //   }
 // }
 
+// Loop for function above
+fn push_statement(
+  parser: Parser,
+  statements: List(untyped.Statement),
+  start: Option(Int),
+  end: Int,
+) -> #(Result(List(untyped.Statement), ParseError), Option(Int), Int, Parser) {
+  let #(res, parser) = parse_statement(parser)
+  case res {
+    Error(err) -> #(Error(err), start, end, parser)
+    Ok(Some(statement)) -> {
+      let location = untyped.statement_location(statement)
+      let start = case start {
+        None -> Some(location.start)
+        _ -> start
+      }
+      let end = location.end
+      let statements = [statement, ..statements]
+      push_statement(parser, statements, start, end)
+    }
+    Ok(_) -> #(Ok(list.reverse(statements)), start, end, parser)
+  }
+}
+
 fn parse_statement(
   parser: Parser,
-) -> #(Result(Option(ast.UntypedStatement), ParseError), Parser) {
+) -> #(Result(Option(untyped.Statement), ParseError), Parser) {
   case parser.tok0 {
     Some(#(start, token.Use, end)) -> {
       let #(res, parser) =
@@ -729,7 +770,7 @@ fn parse_statement(
 fn parse_block(
   parser: Parser,
   start: Int,
-) -> #(Result(ast.UntypedExpr, ParseError), Parser) {
+) -> #(Result(untyped.Expr, ParseError), Parser) {
   todo
 }
 
@@ -834,8 +875,59 @@ fn parse_pattern(
 //   pattern, pattern | pattern, pattern if -> expr
 fn parse_case_clause(
   parser: Parser,
-) -> #(Result(UntypedClause, ParseError), Parser) {
-  todo
+) -> #(Result(Option(UntypedClause), ParseError), Parser) {
+  use patterns, parser <- try(parse_patterns(parser))
+  case patterns {
+    [first, ..] -> {
+      use alternative_patterns, parser <- try(
+        push_alternative_patterns(parser, []),
+      )
+      use guard, parser <- try(parse_case_clause_guard(parser, False))
+      let error_map = fn(e: ParseError) {
+        case e.error {
+          error.UnexpectedToken(expected, _hint) ->
+            ParseError(
+              ..e,
+              error: error.UnexpectedToken(
+                expected: expected,
+                hint: Some(
+                  "Did you mean to wrap a multi line clause in curly braces?",
+                ),
+              ),
+            )
+          _ -> e
+        }
+      }
+      use #(arr_s, arr_e), parser <- try(
+        expect_one(parser, token.RArrow)
+        |> pair.map_first(result.map_error(_, error_map)),
+      )
+      use then, parser <- try(parse_expression(parser))
+      case then {
+        // Clause(location: SrcSpan(start: lead.location().start, end: then.location().end), pattern: patterns, alternative_patterns, guard, then)
+        Some(then) -> #(Ok(Some(Nil)), parser)
+        None -> #(
+          parse_error(error.ExpectedExpr, SrcSpan(arr_s, arr_e)),
+          parser,
+        )
+      }
+    }
+    _ -> #(Ok(None), parser)
+  }
+}
+
+fn push_alternative_patterns(
+  parser: Parser,
+  list: List(ast.UntypedPattern),
+) -> #(Result(List(ast.UntypedPattern), ParseError), Parser) {
+  let #(loc, parser) = maybe_one(parser, token.Pipe)
+  case loc {
+    None -> #(Ok(list.reverse(list)), parser)
+    Some(_) -> {
+      use patterns, parser <- try(parse_patterns(parser))
+      push_alternative_patterns(parser, list.append(patterns, list))
+    }
+  }
 }
 
 // TODO
@@ -845,7 +937,7 @@ type UntypedClause =
 fn parse_patterns(
   parser: Parser,
 ) -> #(Result(List(ast.UntypedPattern), ParseError), Parser) {
-  todo
+  series_of(parser, parse_pattern, Some(token.Comma))
 }
 
 // examples:
@@ -1218,9 +1310,13 @@ fn expect_one(
 fn expect_one_following_series(
   parser: Parser,
   wanted: Token,
-  series: String,
+  in series: String,
 ) -> #(Result(#(Int, Int), ParseError), Parser) {
-  todo
+  let #(loc, parser) = maybe_one(parser, wanted)
+  case loc {
+    Some(#(start, end)) -> #(Ok(#(start, end)), parser)
+    None -> next_tok_unexpected(parser, [string.inspect(wanted), series])
+  }
 }
 
 // Expect a Name else a token dependent helpful error
@@ -1277,37 +1373,50 @@ fn series_of(
   parse parser_fn: fn(Parser) -> #(Result(Option(a), ParseError), Parser),
   by separator: Option(Token),
 ) -> #(Result(List(a), ParseError), Parser) {
-  let yield = fn(parser) {
-    let #(res, parser) = parser_fn(parser)
-    case res {
-      Ok(Some(item)) -> {
-        case separator {
-          Some(sep) -> {
-            let #(loc, parser) = maybe_one(parser, sep)
-            case loc {
-              None -> Ok(iterator.Done)
-              Some(_) -> {
-                // Helpful error if extra separator
-                let #(loc, parser) = maybe_one(parser, sep)
-                case loc {
-                  Some(#(start, end)) ->
-                    parse_error(error.ExtraSeparator, SrcSpan(start, end))
-                  None -> Ok(iterator.Next(item, parser))
-                }
+  series_push(parser, [], parser_fn, separator)
+}
+
+// Loop for function above
+fn series_push(
+  parser: Parser,
+  series: List(a),
+  parser_fn: fn(Parser) -> #(Result(Option(a), ParseError), Parser),
+  by separator: Option(Token),
+) -> #(Result(List(a), ParseError), Parser) {
+  let #(res, parser) = parser_fn(parser)
+  case res {
+    Ok(Some(item)) -> {
+      case separator {
+        Some(sep) -> {
+          let #(loc, parser) = maybe_one(parser, sep)
+          case loc {
+            None -> #(
+              Ok(
+                [item, ..series]
+                |> list.reverse,
+              ),
+              parser,
+            )
+            Some(_) -> {
+              // Helpful error if extra separator
+              let #(loc, parser) = maybe_one(parser, sep)
+              case loc {
+                Some(#(start, end)) -> #(
+                  parse_error(error.ExtraSeparator, SrcSpan(start, end)),
+                  parser,
+                )
+                None ->
+                  series_push(parser, [item, ..series], parser_fn, separator)
               }
             }
           }
-          None -> Ok(iterator.Next(item, parser))
         }
+        None -> series_push(parser, [item, ..series], parser_fn, separator)
       }
-      Ok(None) -> Ok(iterator.Done)
-      Error(err) -> Error(err)
     }
+    Ok(None) -> #(Ok(list.reverse(series)), parser)
+    Error(err) -> #(Error(err), parser)
   }
-  let items =
-    try_unfold(parser, yield)
-    |> try_to_list
-  #(items, parser)
 }
 
 // If next token is a Name, consume it and return relevant info, otherwise, return none
@@ -1587,8 +1696,8 @@ fn tok_to_binop(t: Token) -> Option(ast.BinOp) {
 /// Simple-Precedence-Parser, perform reduction for expression
 fn do_reduce_expression(
   op: Spanned,
-  estack: List(ast.UntypedExpr),
-) -> List(ast.UntypedExpr) {
+  estack: List(untyped.Expr),
+) -> List(untyped.Expr) {
   case estack {
     [er, el, ..rest] -> [expr_op_reduction(op, el, er), ..rest]
     _ -> panic as "Tried to reduce without 2 expressions"
@@ -1603,21 +1712,31 @@ fn do_reduce_clause_guard() {
 
 fn expr_op_reduction(
   op: Spanned,
-  l: ast.UntypedExpr,
-  r: ast.UntypedExpr,
-) -> ast.UntypedExpr {
+  l: untyped.Expr,
+  r: untyped.Expr,
+) -> untyped.Expr {
   case op {
     #(_, token.Pipe, _) -> {
       let expressions = case l {
-        // UntypedExprPipeline(expressions) -> queue.push_back(expressions, r)
+        untyped.PipeLineExpr(expressions) -> queue.push_back(expressions, r)
         _ -> queue.from_list([l, r])
       }
-      //UntypedExprPipeline(expressions)
-      Nil
+      expressions
+      |> untyped.PipeLineExpr
     }
     #(_, tok, _) ->
       case tok_to_binop(tok) {
-        Some(binop) -> Nil
+        Some(binop) ->
+          untyped.BinOpExpr(
+            location: SrcSpan(
+              untyped.expr_location(l).start,
+              untyped.expr_location(r).end,
+            ),
+            name: binop,
+            left: l,
+            right: r,
+          )
+
         //UntypedExprBinOp(
         //  location: SrcSpan(untyped_expr_location(l).start, untyped_expr_location(r).end),
         //  name: binop,
