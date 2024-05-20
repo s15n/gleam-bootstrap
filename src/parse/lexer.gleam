@@ -144,11 +144,8 @@ pub fn new(input: Iterator(#(String, Int))) -> Lexer {
 fn inner_next(lexer: Lexer) -> #(LexResult, Lexer) {
   case queue.pop_front(lexer.pending) {
     Error(_) -> {
-      let #(res, lexer) = consume_normal(lexer)
-      case res {
-        Ok(_) -> inner_next(lexer)
-        Error(err) -> #(Error(err), lexer)
-      }
+      use _, lexer <- try(consume_normal(lexer))
+      inner_next(lexer)
     }
     Ok(#(first, rest)) -> {
       #(Ok(first), Lexer(..lexer, pending: rest))
@@ -238,11 +235,8 @@ fn consume_character(
   case c {
     "@" -> #(Ok(Nil), eat_single_char(lexer, token.At))
     "\"" -> {
-      let #(res, lexer) = lex_string(lexer)
-      case res {
-        Ok(str) -> #(Ok(Nil), emit(lexer, str))
-        Error(err) -> #(Error(err), lexer)
-      }
+      use str, lexer <- try(lex_string(lexer))
+      #(Ok(Nil), emit(lexer, str))
     }
     "=" -> #(
       Ok(Nil),
@@ -863,15 +857,10 @@ fn lex_string(lexer: Lexer) -> #(LexResult, Lexer) {
   let #(_, lexer) = next_char(lexer)
   let sb = string_builder.new()
 
-  let #(res, lexer) = push_string(lexer, sb, start_pos)
-  case res {
-    Ok(sb) -> {
-      let end_pos = get_pos(lexer)
-      let token = token.String(string_builder.to_string(sb))
-      #(Ok(#(start_pos, token, end_pos)), lexer)
-    }
-    Error(err) -> #(Error(err), lexer)
-  }
+  use sb, lexer <- try(push_string(lexer, sb, start_pos))
+  let end_pos = get_pos(lexer)
+  let token = token.String(string_builder.to_string(sb))
+  #(Ok(#(start_pos, token, end_pos)), lexer)
 }
 
 // Loop for function above
@@ -1104,4 +1093,16 @@ pub fn iterator(lexer: Lexer) -> Iterator(LexResult) {
     }
   }
   iterator.unfold(lexer, yield)
+}
+
+// Gleam helper
+fn try(
+  pair: #(Result(a, LexicalError), Lexer),
+  fun: fn(a, Lexer) -> #(Result(c, LexicalError), Lexer),
+) -> #(Result(c, LexicalError), Lexer) {
+  let #(res, lexer) = pair
+  case res {
+    Ok(a) -> fun(a, lexer)
+    Error(err) -> #(Error(err), lexer)
+  }
 }

@@ -1331,6 +1331,7 @@ fn parse_error(
   Error(ParseError(error: error, location: location))
 }
 
+// Gleam helper
 fn try(
   pair: #(Result(a, ParseError), Parser),
   fun: fn(a, Parser) -> #(Result(c, ParseError), Parser),
