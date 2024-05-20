@@ -590,7 +590,38 @@ fn parse_block(
 fn parse_pattern(
   parser: Parser,
 ) -> #(Result(Option(UntypedPattern), ParseError), Parser) {
-  todo
+  let #(res, parser) = case parser.tok0 {
+    // Pattern::Var or Pattern::Constructor start
+    Some(#(start, token.Name(name), end)) -> todo
+    // Constructor
+    Some(#(start, token.UpName(..) as token, end)) -> todo
+    Some(#(start, token.DiscardName(name), end)) -> todo
+    Some(#(start, token.String(value), end)) -> todo
+    Some(#(start, token.Int(value), end)) -> todo
+    Some(#(start, token.Float(value), end)) -> todo
+    Some(#(start, token.Hash, _)) -> todo
+    // BitArray
+    Some(#(start, token.LtLt, _)) -> todo
+    // List
+    Some(#(start, token.LeftSquare, _)) -> todo
+    // No pattern
+    tok0 -> {
+      #(None, Parser(..parser, tok0: tok0))
+    }
+  }
+  case res {
+    Some(pattern) ->
+      case parser.tok0 {
+        Some(#(_, token.As, _)) -> {
+          let parser = advance(parser)
+          use #(start, name, end), parser <- try(expect_name(parser))
+          #(Ok(Some(Nil)), parser)
+          // Pattern.Assign(name, location: SrcSpan(start, end), pattern)
+        }
+        _ -> #(Ok(Some(pattern)), parser)
+      }
+    None -> #(Ok(None), parser)
+  }
 }
 
 // TODO
@@ -1037,7 +1068,17 @@ fn next_tok_unexpected(
   parser: Parser,
   expected: List(String),
 ) -> #(Result(a, ParseError), Parser) {
-  todo
+  let #(next, parser) = next_tok(parser)
+  case next {
+    None -> #(parse_error(error.UnexpectedEof, SrcSpan(0, 0)), parser)
+    Some(#(start, _, end)) -> #(
+      parse_error(
+        error.UnexpectedToken(expected, hint: None),
+        SrcSpan(start, end),
+      ),
+      parser,
+    )
+  }
 }
 
 // Moves the token stream forward

@@ -175,3 +175,33 @@ pub fn name_test() {
     location: SrcSpan(start: 4, end: 6),
   ))
 }
+
+pub fn name1_test() {
+  "let _xS = 1"
+  |> should_err(ParseError(
+    error: error.LexError(error: LexicalError(
+      error: error.BadDiscardName(name: "_xS"),
+      location: SrcSpan(start: 4, end: 7),
+    )),
+    location: SrcSpan(start: 4, end: 7),
+  ))
+}
+
+pub fn name2_test() {
+  "type S_m = String"
+  |> should_err(ParseError(
+    error: error.LexError(error: LexicalError(
+      error: error.BadUpname(name: "S_m"),
+      location: SrcSpan(start: 5, end: 8),
+    )),
+    location: SrcSpan(start: 5, end: 8),
+  ))
+}
+
+pub fn pointless_spread_test() {
+  "let xs = [] [..xs]"
+  |> should_err(ParseError(
+    error: error.ListSpreadWithoutElements,
+    location: SrcSpan(start: 12, end: 18),
+  ))
+}
