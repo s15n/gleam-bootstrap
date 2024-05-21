@@ -405,29 +405,90 @@ fn parse_expression_unit(
   parser: Parser,
 ) -> #(Result(Option(untyped.Expr), ParseError), Parser) {
   use res, parser <- try(case parser.tok0 {
-    Some(#(start, token.String(value), end)) -> todo
-    Some(#(start, token.Int(value), end)) -> {
-      let parser = advance(parser)
-      // UntypedExpr::Int(location: SrcSpan(start, end), value)
-      #(
-        Ok(Some(untyped.IntExpr(location: SrcSpan(start, end), value: value))),
-        parser,
-      )
-    }
-    Some(#(start, token.Float(value), end)) -> todo
+    Some(#(start, token.String(value), end)) -> #(
+      Ok(Some(untyped.StringExpr(location: SrcSpan(start, end), value: value))),
+      advance(parser),
+    )
+    Some(#(start, token.Int(value), end)) -> #(
+      Ok(Some(untyped.IntExpr(location: SrcSpan(start, end), value: value))),
+      advance(parser),
+    )
+    Some(#(start, token.Float(value), end)) -> #(
+      Ok(Some(untyped.FloatExpr(location: SrcSpan(start, end), value: value))),
+      advance(parser),
+    )
     // var lower_name and UpName
     Some(#(start, token.Name(name), end))
-    | Some(#(start, token.UpName(name), end)) -> {
+    | Some(#(start, token.UpName(name), end)) -> #(
+      Ok(Some(untyped.VarExpr(location: SrcSpan(start, end), name: name))),
+      advance(parser),
+    )
+    Some(#(start, token.Todo, end)) -> {
       let parser = advance(parser)
-      // UntypedExpr::Var(location: SrcSpan(start, end), name)
+      let #(loc, parser) = maybe_one(parser, token.As)
+      use #(message, end), parser <- try(case loc {
+        Some(_) -> {
+          use message, parser <- try(expect_expression_unit(parser))
+          let end = untyped.expr_location(message).end
+          #(Ok(#(Some(message), end)), parser)
+        }
+        None -> #(Ok(#(None, end)), parser)
+      })
       #(
-        Ok(Some(untyped.VarExpr(location: SrcSpan(start, end), name: name))),
+        Ok(
+          Some(untyped.TodoExpr(
+            location: SrcSpan(start, end),
+            kind: ast.KeywordTodo,
+            message: message,
+          )),
+        ),
         parser,
       )
     }
-    Some(#(start, token.Todo, end)) -> todo
-    Some(#(start, token.Panic, end)) -> todo
-    Some(#(start, token.Hash, _)) -> todo
+    Some(#(start, token.Panic, end)) -> {
+      let parser = advance(parser)
+      let #(loc, parser) = maybe_one(parser, token.As)
+      use #(message, end), parser <- try(case loc {
+        Some(_) -> {
+          use message, parser <- try(expect_expression_unit(parser))
+          let end = untyped.expr_location(message).end
+          #(Ok(#(Some(message), end)), parser)
+        }
+        None -> #(Ok(#(None, end)), parser)
+      })
+      #(
+        Ok(
+          Some(untyped.PanicExpr(
+            location: SrcSpan(start, end),
+            message: message,
+          )),
+        ),
+        parser,
+      )
+    }
+    Some(#(start, token.Hash, _)) -> {
+      let parser = advance(parser)
+      use _, parser <- try(expect_one(parser, token.LeftParen))
+      use elements, parser <- try(series_of(
+        parser,
+        parse_expression,
+        Some(token.Comma),
+      ))
+      use #(_, end), parser <- try(expect_one_following_series(
+        parser,
+        token.RightParen,
+        in: "an expression",
+      ))
+      #(
+        Ok(
+          Some(untyped.TupleExpr(
+            location: SrcSpan(start, end),
+            elements: elements,
+          )),
+        ),
+        parser,
+      )
+    }
     // list
     Some(#(start, token.LeftSquare, _)) -> {
       let parser = advance(parser)
@@ -533,7 +594,11 @@ fn parse_expression_unit(
       }
     }
     // expression block  "{" "}"
-    Some(#(start, token.LeftBrace, _)) -> todo
+    Some(#(start, token.LeftBrace, _)) ->
+      parser
+      |> advance
+      |> parse_block(start)
+      |> pair.map_first(result.map(_, option.Some))
     // case
     Some(#(start, token.Case, case_end)) -> {
       let parser = advance(parser)
@@ -569,17 +634,61 @@ fn parse_expression_unit(
           parser,
         )
       }
-      todo
     }
     // helpful error on possibly trying to group with "(" ")"
-    Some(#(start, token.LeftParen, _)) -> todo
+    Some(#(start, token.LeftParen, _)) -> #(
+      parse_error(error.ExprLparStart, SrcSpan(start, start)),
+      parser,
+    )
     // Boolean negation
-    Some(#(start, token.Bang, _)) -> todo
+    Some(#(start, token.Bang, _)) -> {
+      let parser = advance(parser)
+      use res, parser <- try(parse_expression_unit(parser))
+      case res {
+        Some(value) -> #(
+          Ok(
+            Some(untyped.NegateBoolExpr(
+              location: SrcSpan(start, untyped.expr_location(value).end),
+              value: value,
+            )),
+          ),
+          parser,
+        )
+        None -> #(
+          parse_error(error.ExpectedExpr, SrcSpan(start, start)),
+          parser,
+        )
+      }
+    }
     // Int negation
-    Some(#(start, token.Minus, _)) -> todo
+    Some(#(start, token.Minus, _)) -> {
+      let parser = advance(parser)
+      use res, parser <- try(parse_expression_unit(parser))
+      case res {
+        Some(value) -> #(
+          Ok(
+            Some(untyped.NegateIntExpr(
+              location: SrcSpan(start, untyped.expr_location(value).end),
+              value: value,
+            )),
+          ),
+          parser,
+        )
+        None -> #(
+          parse_error(error.ExpectedExpr, SrcSpan(start, start)),
+          parser,
+        )
+      }
+    }
     // if it reaches this code block, there must be no "let" or "assert" at the beginning of the expression
-    Some(#(start, token.Equal, end)) -> todo
-    Some(#(start, token.Colon, end)) -> todo
+    Some(#(start, token.Equal, end)) -> #(
+      parse_error(error.NoLetBinding, SrcSpan(start, end)),
+      parser,
+    )
+    Some(#(start, token.Colon, end)) -> #(
+      parse_error(error.NoLetBinding, SrcSpan(start, end)),
+      parser,
+    )
     tok0 -> #(Ok(None), Parser(..parser, tok0: tok0))
   })
   case res {
@@ -634,8 +743,7 @@ fn parse_assignment(
             opt,
             ParseError(
               error: error.ExpectedEqual,
-              // TODO: pattern.location().start|end
-              location: SrcSpan(0, 0),
+              location: ast.pattern_location(pattern),
             ),
           )
         }),
@@ -804,7 +912,18 @@ fn parse_block(
   parser: Parser,
   start: Int,
 ) -> #(Result(untyped.Expr, ParseError), Parser) {
-  todo
+  use body, parser <- try(parse_statement_seq(parser))
+  use #(_, end), parser <- try(expect_one(parser, token.RightBrace))
+  case body {
+    None -> #(parse_error(error.NoExpression, SrcSpan(start, end)), parser)
+    Some(#(statements, _)) -> #(
+      Ok(untyped.BlockExpr(
+        statements: statements,
+        location: SrcSpan(start, end),
+      )),
+      parser,
+    )
+  }
 }
 
 // The left side of an "=" or a "->"
@@ -865,7 +984,32 @@ fn parse_pattern(
     }
     // Constructor
     Some(#(start, token.UpName(..) as token, end)) -> todo
-    Some(#(start, token.DiscardName(name), end)) -> todo
+    Some(#(start, token.DiscardName(name), end)) -> {
+      let parser = advance(parser)
+
+      // A discard is not permitted on the left hand side of a `<>`
+      use <- guard(
+        when: case parser.tok0 {
+          Some(#(_, token.LtGt, _)) -> True
+          _ -> False
+        },
+        return: #(
+          concat_pattern_variable_left_hand_side_error(start, end),
+          parser,
+        ),
+      )
+
+      #(
+        Ok(
+          Some(ast.DiscardPat(
+            location: SrcSpan(start, end),
+            name: name,
+            type_: Nil,
+          )),
+        ),
+        parser,
+      )
+    }
     Some(#(start, token.String(value), end)) -> todo
     Some(#(start, token.Int(value), end)) -> todo
     Some(#(start, token.Float(value), end)) -> todo
@@ -1180,12 +1324,9 @@ fn publicity(
 //   a a:A
 fn parse_fn_param(
   parser: Parser,
-  anonymous: Bool,
+  anonymous is_anon: Bool,
 ) -> #(Result(Option(untyped.Arg), ParseError), Parser) {
-  let #(early_return, res, start, names, end, parser) = case
-    parser.tok0,
-    parser.tok1
-  {
+  let #(opt, parser) = case parser.tok0, parser.tok1 {
     // labeled discard
     Some(#(start, token.Name(name: label), tok0_end)),
       Some(#(_, token.DiscardName(name), end)) -> todo
@@ -1193,16 +1334,27 @@ fn parse_fn_param(
     Some(#(start, token.DiscardName(name), end)), tok1 -> todo
     // labeled name
     Some(#(start, token.Name(name: label), tok0_end)),
-      Some(#(_, token.Name(name), end)) -> todo
+      Some(#(_, token.Name(name), end)) -> {
+      use <- guard(when: is_anon, return: #(
+        Some(parse_error(error.UnexpectedLabel, SrcSpan(start, tok0_end))),
+        parser,
+      ))
+      let parser =
+        parser
+        |> advance
+        |> advance
+      #(Some(Ok(#(start, ast.LabelNamedArgNames(name, label), end))), parser)
+    }
     // name
     Some(#(start, token.Name(name), end)), tok1 -> todo
     tok0, tok1 -> {
-      #(True, Ok(Nil), 0, [], 0, Parser(..parser, tok0: tok0, tok1: tok1))
+      #(None, Parser(..parser, tok0: tok0, tok1: tok1))
     }
   }
-  case early_return {
-    True -> #(Ok(None), parser)
-    False -> {
+  case opt {
+    None -> #(Ok(None), parser)
+    Some(Error(err)) -> #(Error(err), parser)
+    Some(Ok(#(start, names, end))) -> {
       use res, parser <- try(parse_type_annotation(parser, token.Colon))
       let #(end, annotation) = case res {
         Some(annotation) -> #(0, Some(annotation))
@@ -1330,7 +1482,10 @@ fn parse_type(
     // Function
     Some(#(start, token.Fn, end)) -> todo
     // Constructor function
-    Some(#(start, token.UpName(name), end)) -> todo
+    Some(#(start, token.UpName(name), end)) -> {
+      let parser = advance(parser)
+      parse_type_name_finish(parser, start, None, name, end)
+    }
     // Constructor Module or type Variable
     Some(#(start, token.Name(mod_name), end)) -> todo
     tok0 -> #(Ok(None), Parser(..parser, tok0: tok0))
@@ -1345,7 +1500,22 @@ fn parse_type_name_finish(
   name: String,
   end: Int,
 ) -> #(Result(Option(ast.TypeAst), ParseError), Parser) {
-  todo
+  let #(loc, parser) = maybe_one(parser, token.LeftParen)
+  case loc {
+    Some(_) -> {
+      use args, parser <- try(parse_types(parser))
+      use #(_, par_e), parser <- try(expect_one(parser, token.RightParen))
+      #(
+        Ok(
+          // (TypeAstConstructor(location: SrcSpan(start, par_e), module, name, args))
+          Some(ast.TypeAstConstructor),
+        ),
+        parser,
+      )
+    }
+    // (TypeAstConstructor(location: SrcSpan(start, end), module, name, []))
+    None -> #(Ok(Some(ast.TypeAstConstructor)), parser)
+  }
 }
 
 // For parsing a comma separated "list" of types, for tuple, constructor, and function
@@ -1609,7 +1779,8 @@ fn next_tok_step(
   previous_newline: Option(Int),
 ) -> #(Option(Spanned), Option(Int), Parser) {
   case iterator.step(parser.tokens) {
-    iterator.Next(next, rest) ->
+    iterator.Next(next, rest) -> {
+      let parser = Parser(..parser, tokens: rest)
       case next {
         Ok(token) ->
           case token {
@@ -1696,12 +1867,7 @@ fn next_tok_step(
             token -> #(
               spanned,
               previous_newline,
-              Parser(
-                ..parser,
-                tok0: parser.tok1,
-                tok1: Some(token),
-                tokens: rest,
-              ),
+              Parser(..parser, tok0: parser.tok1, tok1: Some(token)),
             )
           }
         // die on lex error
@@ -1713,10 +1879,10 @@ fn next_tok_step(
             lex_errors: queue.push_back(parser.lex_errors, err),
             tok0: parser.tok1,
             tok1: None,
-            tokens: rest,
           ),
         )
       }
+    }
     iterator.Done -> #(
       spanned,
       previous_newline,
@@ -1756,6 +1922,17 @@ fn concat_pattern_variable_left_hand_side_error(
     error: error.ConcatPatternVariableLeftHandSide,
     location: SrcSpan(start, end),
   ))
+}
+
+// line 2687
+fn expect_expression_unit(
+  parser: Parser,
+) -> #(Result(untyped.Expr, ParseError), Parser) {
+  use res, parser <- try(parse_expression_unit(parser))
+  case res {
+    Some(expr) -> #(Ok(expr), parser)
+    None -> next_tok_unexpected(parser, ["An expression"])
+  }
 }
 
 // Operator Precedence Parsing

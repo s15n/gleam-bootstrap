@@ -43,7 +43,7 @@ pub type Expr {
   TupleExpr(location: SrcSpan, elements: List(Expr))
   TupleIndexExpr(location: SrcSpan, index: Int, tuple: Expr)
   TodoExpr(kind: ast.TodoKind, location: SrcSpan, message: Option(Expr))
-  PanicExpr(location: SrcSpan, message: Expr)
+  PanicExpr(location: SrcSpan, message: Option(Expr))
   BitArrayExpr(location: SrcSpan, segments: List(ExprBitArraySegment))
   RecordUpdateExpr(
     location: SrcSpan,

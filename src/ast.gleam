@@ -361,6 +361,23 @@ pub type Pattern(ty) {
   )
 }
 
+pub fn pattern_location(of pattern: Pattern(_)) -> SrcSpan {
+  case pattern {
+    IntPat(location: l, ..)
+    | FloatPat(location: l, ..)
+    | StringPat(location: l, ..)
+    | VariablePat(location: l, ..)
+    | VarUsagePat(location: l, ..)
+    | AssignPat(location: l, ..)
+    | DiscardPat(location: l, ..)
+    | ListPat(location: l, ..)
+    | ConstructorPat(location: l, ..)
+    | TuplePat(location: l, ..)
+    | BitArrayPat(location: l, ..)
+    | StringPrefixPat(location: l, ..) -> l
+  }
+}
+
 pub type AssignName {
   VariableAssignName(String)
   DiscardAssignName(String)

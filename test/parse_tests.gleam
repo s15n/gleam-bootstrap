@@ -10,6 +10,12 @@ fn should_err(src: String, error) {
   |> should.equal(error)
 }
 
+fn should_any_err(src: String) {
+  let result = parse.parse_statement_sequence(src)
+  result
+  |> should.be_error
+}
+
 // TODO: https://github.com/gleam-lang/gleam/blob/main/compiler-core/src/parse/tests.rs
 
 pub fn ints_test() {
@@ -220,6 +226,113 @@ pub fn anonymous_function_labeled_arguments_test() {
 }"
   |> should_err(ParseError(
     error: error.UnexpectedLabel,
-    location: SrcSpan(start: 33, end: 34),
+    location: SrcSpan(start: 24, end: 31),
   ))
+}
+
+pub fn no_let_binding_test() {
+  "foo = 32"
+  |> should_err(ParseError(
+    error: error.NoLetBinding,
+    location: SrcSpan(start: 4, end: 5),
+  ))
+}
+
+pub fn no_let_binding1_test() {
+  "foo:Int = 32"
+  |> should_err(ParseError(
+    error: error.NoLetBinding,
+    location: SrcSpan(start: 3, end: 4),
+  ))
+}
+
+pub fn no_let_binding2_test() {
+  "let bar:Int = 32
+bar = 42"
+  |> should_err(ParseError(
+    error: error.NoLetBinding,
+    location: SrcSpan(start: 21, end: 22),
+  ))
+}
+
+pub fn no_let_binding3_test() {
+  "[x] = [2]"
+  |> should_err(ParseError(
+    error: error.NoLetBinding,
+    location: SrcSpan(start: 4, end: 5),
+  ))
+}
+
+pub fn no_eq_after_binding_test() {
+  "let foo"
+  |> should_err(ParseError(
+    error: error.ExpectedEqual,
+    location: SrcSpan(start: 4, end: 7),
+  ))
+}
+
+pub fn no_eq_after_binding1_test() {
+  "let foo
+foo = 4"
+  |> should_err(ParseError(
+    error: error.ExpectedEqual,
+    location: SrcSpan(start: 4, end: 7),
+  ))
+}
+
+pub fn no_let_binding_snapshot_1_test() {
+  "foo = 4"
+  |> should_any_err
+}
+
+pub fn no_let_binding_snapshot_2_test() {
+  "foo:Int = 4"
+  |> should_any_err
+}
+
+pub fn no_let_binding_snapshot_3_test() {
+  "let bar:Int = 32
+bar = 42"
+  |> should_any_err
+}
+
+pub fn no_eq_after_binding_snapshot_1_test() {
+  "let foo"
+  |> should_any_err
+}
+
+pub fn no_eq_after_binding_snapshot_2_test() {
+  "let foo
+foo = 4"
+  |> should_any_err
+}
+
+pub fn discard_left_hand_side_of_concat_pattern_test() {
+  "
+case \"\" {
+  _ <> rest -> rest
+}
+"
+  |> should_any_err
+}
+
+pub fn assign_left_hand_side_of_concat_pattern_test() {
+  "
+case \"\" {
+  first <> rest -> rest
+}
+"
+  |> should_any_err
+}
+
+// https://github.com/gleam-lang/gleam/issues/1890
+pub fn valueless_list_spread_expression_test() {
+  "let x = [1, 2, 3, ..]"
+  |> should_any_err
+}
+
+// https://github.com/gleam-lang/gleam/issues/2035
+pub fn semicolons_test() {
+  "{ 2 + 3; - -5; }"
+  |> should_any_err
 }
