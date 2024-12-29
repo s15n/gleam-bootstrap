@@ -221,7 +221,6 @@ fn inner_parse_module(parser: Parser) -> #(Result(Parsed, ParseError), Parser) {
     parser,
     definitions,
   ))
-
   #(
     Ok(Parsed(
       module: ast.Module(
@@ -292,7 +291,44 @@ fn ensure_no_errors(
 fn parse_definition(
   parser: Parser,
 ) -> #(Result(Option(untyped.TargetedDefinition), ParseError), Parser) {
-  todo
+  let attributes = attributes_default
+  let #(res, attributes, parser) = parse_attributes(parser, attributes)
+  case res {
+    Ok(location) -> {
+      use def, parser <- try(case parser.tok0, parser.tok1 {
+        // Imports
+        Some(#(start, token.Import, _)), _ -> todo
+        // Module Constants
+        Some(#(start, token.Const, _)), _ -> todo
+        Some(#(start, token.Pub, _)), Some(#(_, token.Const, _)) -> todo
+        // Function
+        Some(#(start, token.Fn, _)), _ -> todo
+        Some(#(start, token.Pub, _)), Some(#(_, token.Fn, _)) -> todo
+        // Custom Types and Type Aliases
+        Some(#(start, token.Type, _)), _ -> todo
+        Some(#(start, token.Pub, _)), Some(#(_, token.Opaque, _)) -> todo
+        Some(#(start, token.Pub, _)), Some(#(_, token.Type, _)) -> todo
+        _, _ -> #(Ok(None), parser)
+      })
+      let def_is_fn = case def {
+        Some(def) -> todo
+        None -> False
+      }
+      let attributes_fn_only = todo
+      case def, location {
+        Some(def), _ if def_is_fn -> todo
+        Some(def), None -> todo
+        _, Some(location) if attributes_fn_only -> todo
+        Some(def), _ -> todo
+        _, Some(location) -> #(
+          parse_error(error.ExpectedDefinition, location),
+          parser,
+        )
+        _, _ -> #(Ok(None), parser)
+      }
+    }
+    Error(err) -> #(Error(err), parser)
+  }
 }
 
 //
@@ -1933,6 +1969,14 @@ fn expect_expression_unit(
     Some(expr) -> #(Ok(expr), parser)
     None -> next_tok_unexpected(parser, ["An expression"])
   }
+}
+
+// line 2971
+fn parse_attributes(
+  parse: Parser,
+  attributes: Attributes,
+) -> #(Result(Option(SrcSpan), ParseError), Attributes, Parser) {
+  todo
 }
 
 // Operator Precedence Parsing

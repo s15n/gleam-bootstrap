@@ -1,8 +1,12 @@
 import gleeunit/should
 
+import gleam/iterator
+
 import ast.{SrcSpan}
 import parse
 import parse/error.{LexicalError, ParseError}
+import parse/lexer
+import parse/token
 
 fn should_err(src: String, error) {
   let assert Error(result) = parse.parse_statement_sequence(src)
@@ -12,6 +16,24 @@ fn should_err(src: String, error) {
 
 fn should_any_err(src: String) {
   let result = parse.parse_statement_sequence(src)
+  result
+  |> should.be_error
+}
+
+fn should_parse(src: String) {
+  let result = parse.parse_statement_sequence(src)
+  result
+  |> should.be_ok
+}
+
+fn should_parse_module(src: String) {
+  let result = parse.parse_module(src)
+  result
+  |> should.be_ok
+}
+
+fn should_module_err(src: String) {
+  let result = parse.parse_module(src)
   result
   |> should.be_error
 }
@@ -335,4 +357,459 @@ pub fn valueless_list_spread_expression_test() {
 pub fn semicolons_test() {
   "{ 2 + 3; - -5; }"
   |> should_any_err
+}
+
+pub fn bare_expression_test() {
+  "1"
+  |> should_parse
+}
+
+// https://github.com/gleam-lang/gleam/issues/1991
+pub fn block_of_one_test() {
+  "{ 1 }"
+  |> should_parse
+}
+
+// https://github.com/gleam-lang/gleam/issues/1991
+pub fn block_of_two_test() {
+  "{ 1 2 }"
+  |> should_parse
+}
+
+// https://github.com/gleam-lang/gleam/issues/1991
+pub fn nested_block_test() {
+  "{ 1 { 1.0 2.0 } 3 }"
+  |> should_parse
+}
+
+// https://github.com/gleam-lang/gleam/issues/1831
+pub fn argument_scope_test() {
+  "
+1 + let a = 5
+a
+"
+  |> should_any_err
+}
+
+pub fn multiple_external_for_same_project_erlang_test() {
+  "
+@external(erlang, \"one\", \"two\")
+@external(erlang, \"three\", \"four\")
+pub fn one(x: Int) -> Int {
+  todo
+}
+"
+  |> should_module_err
+}
+
+pub fn multiple_external_for_same_project_javascript_test() {
+  "
+@external(javascript, \"one\", \"two\")
+@external(javascript, \"three\", \"four\")
+pub fn one(x: Int) -> Int {
+  todo
+}
+"
+  |> should_module_err
+}
+
+pub fn unknown_attribute_test() {
+  "@go_faster()
+pub fn main() { 1 }"
+  |> should_module_err
+}
+
+pub fn incomplete_function_test() {
+  "fn()"
+  |> should_any_err
+}
+
+pub fn multiple_deprecation_attributes_test() {
+  "
+@deprecated(\"1\")
+@deprecated(\"2\")
+pub fn main() -> Nil {
+  Nil
+}
+"
+  |> should_module_err
+}
+
+pub fn multiple_internal_attributes_test() {
+  "
+@internal
+@internal
+pub fn main() -> Nil {
+  Nil
+}
+"
+  |> should_module_err
+}
+
+pub fn attributes_with_no_definition_test() {
+  "
+@deprecated(\"1\")
+@target(erlang)
+"
+  |> should_module_err
+}
+
+pub fn external_attribute_with_non_fn_definition_test() {
+  "
+@external(erlang, \"module\", \"fun\")
+pub type Fun
+"
+  |> should_module_err
+}
+
+pub fn attributes_with_improper_definition_test() {
+  "
+@deprecated(\"1\")
+@external(erlang, \"module\", \"fun\")
+"
+  |> should_module_err
+}
+
+pub fn const_with_function_call_test() {
+  "
+pub fn wibble() { 123 }
+const wib: Int = wibble()
+"
+  |> should_module_err
+}
+
+pub fn const_with_function_call_with_args_test() {
+  "
+pub fn wibble() { 123 }
+const wib: Int = wibble(1, \"wobble\")
+"
+  |> should_module_err
+}
+
+pub fn import_type_test() {
+  "import wibble.{type Wobble, Wobble, type Wabble}"
+  |> should_parse_module
+}
+
+pub fn reserved_auto_test() {
+  "const auto = 1"
+  |> should_module_err
+}
+
+pub fn reserved_delegate_test() {
+  "const delegate = 1"
+  |> should_module_err
+}
+
+pub fn reserved_derive_test() {
+  "const derive = 1"
+  |> should_module_err
+}
+
+pub fn reserved_else_test() {
+  "const else = 1"
+  |> should_module_err
+}
+
+pub fn reserved_implement_test() {
+  "const implement = 1"
+  |> should_module_err
+}
+
+pub fn reserved_macro_test() {
+  "const macro = 1"
+  |> should_module_err
+}
+
+pub fn reserved_test_test() {
+  "const test = 1"
+  |> should_module_err
+}
+
+pub fn reserved_echo_test() {
+  "const echo = 1"
+  |> should_module_err
+}
+
+pub fn capture_with_name_test() {
+  "
+pub fn main() {
+  add(_name, 1)
+}
+
+fn add(x, y) {
+  x + y
+}
+"
+  |> should_module_err
+}
+
+pub fn list_spread_with_no_tail_in_the_middle_of_a_list_test() {
+  "
+pub fn main() -> Nil {
+  let xs = [1, 2, 3]
+  [1, 2, .., 3 + 3, 4]
+}
+"
+  |> should_module_err
+}
+
+pub fn list_spread_followed_by_extra_items_test() {
+  "
+pub fn main() -> Nil {
+  let xs = [1, 2, 3]
+  [1, 2, ..xs, 3 + 3, 4]
+}
+"
+  |> should_module_err
+}
+
+// Tests for nested tuples and structs in tuples
+// https://github.com/gleam-lang/gleam/issues/1980
+
+pub fn nested_tuples_test() {
+  "
+let tup = #(#(5, 6))
+{tup.0}.1
+"
+  |> should_parse
+}
+
+pub fn nested_tuples_no_block_test() {
+  "
+let tup = #(#(5, 6))
+tup.0.1
+"
+  |> should_parse
+}
+
+pub fn deeply_nested_tuples_test() {
+  "
+let tup = #(#(#(#(4))))
+{{{tup.0}.0}.0}.0
+"
+  |> should_parse
+}
+
+pub fn deeply_nested_tuples_no_block_test() {
+  "
+let tup = #(#(#(#(4))))
+tup.0.0.0.0
+"
+  |> should_parse
+}
+
+pub fn inner_single_quote_parses_test() {
+  "
+let a = \"inner 'quotes'\"
+"
+  |> should_parse
+}
+
+pub fn string_single_char_suggestion_test() {
+  "
+pub fn main() {
+    let a = 'example'
+  }
+"
+  |> should_module_err
+}
+
+pub fn private_internal_const_test() {
+  "
+@internal
+const wibble = 1
+"
+  |> should_module_err
+}
+
+pub fn private_internal_type_alias_test() {
+  "
+@internal
+type Alias = Int
+"
+  |> should_module_err
+}
+
+pub fn private_internal_function_test() {
+  "
+@internal
+fn wibble() { todo }
+"
+  |> should_module_err
+}
+
+pub fn private_internal_type_test() {
+  "
+@internal
+type Wibble {
+  Wibble
+}
+"
+  |> should_module_err
+}
+
+pub fn wrong_record_access_pattern_test() {
+  "
+pub fn main() {
+  case wibble {
+    wibble.thing -> 1
+  }
+}
+"
+  |> should_module_err
+}
+
+pub fn tuple_invalid_expr_test() {
+  "
+fn main() {
+    #(1, 2, const)
+}
+"
+  |> should_module_err
+}
+
+fn bit_array_invalid_segment_test() {
+  todo
+  //     assert_module_error!(
+  //         "
+  // fn main() {
+  //     <<72, 101, 108, 108, 111, 44, 32, 74, 111, 101, const>>
+  // }
+  // "
+  //     );
+}
+
+pub fn case_invalid_expression_test() {
+  "
+fn main() {
+    case 1, type {
+        _, _ -> 0
+    }
+}
+"
+  |> should_module_err
+}
+
+pub fn case_invalid_case_pattern_test() {
+  "
+fn main() {
+    case 1 {
+        -> -> 0
+    }
+}
+"
+  |> should_module_err
+}
+
+pub fn use_invalid_assignments_test() {
+  "
+fn main() {
+    use fn <- result.try(get_username())
+}
+"
+  |> should_module_err
+}
+
+pub fn assignment_pattern_invalid_tuple_test() {
+  "
+fn main() {
+    let #(a, case, c) = #(1, 2, 3)
+}
+"
+  |> should_module_err
+}
+
+fn assignment_pattern_invalid_bit_segment_test() {
+  todo
+  //     assert_module_error!(
+  //         "
+  // fn main() {
+  //     let <<b1, pub>> = <<24, 3>>
+  // }
+  // "
+  //     );
+}
+
+pub fn type_invalid_constructor_test() {
+  "
+type A {
+    A(String)
+    type
+}
+"
+  |> should_module_err
+}
+
+pub fn type_invalid_type_name_test() {
+  "
+type A(a, type) {
+    A
+}
+"
+  |> should_module_err
+}
+
+pub fn type_invalid_constructor_arg_test() {
+  "
+type A {
+    A(type: String)
+}
+"
+  |> should_module_err
+}
+
+pub fn function_type_invalid_param_type_test() {
+  "
+fn f(g: fn(Int, 1) -> Int) -> Int {
+  g(0, 1)
+}
+"
+  |> should_module_err
+}
+
+pub fn const_invalid_tuple_test() {
+  "
+const a = #(1, 2, <-)
+"
+  |> should_module_err
+}
+
+pub fn const_invalid_list_test() {
+  "
+const a = [1, 2, <-]
+"
+  |> should_module_err
+}
+
+fn const_invalid_bit_array_segment_test() {
+  todo
+  //     assert_module_error!(
+  //         "
+  // const a = <<1, 2, <->>
+  // "
+  //     );
+}
+
+pub fn const_invalid_record_constructor_test() {
+  "
+type A {
+    A(String, Int)
+}
+const a = A(\"a\", let)
+"
+  |> should_module_err
+}
+
+pub fn newline_tokens_test() {
+  lexer.make_tokenizer("1\n\n2\n")
+  |> lexer.iterator
+  |> iterator.to_list
+  |> should.equal([
+    Ok(#(0, token.Int(value: "1"), 1)),
+    Ok(#(1, token.NewLine, 2)),
+    Ok(#(2, token.NewLine, 3)),
+    Ok(#(3, token.Int(value: "2"), 4)),
+    Ok(#(4, token.NewLine, 5)),
+  ])
 }
